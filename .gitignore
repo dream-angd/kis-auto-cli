@@ -1,0 +1,6 @@
+.env
+token_cache.json
+__pycache__/
+*.pyc
+logs/
+.vscode/
