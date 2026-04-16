@@ -14,15 +14,13 @@ def cmd_run(args):
 
 
 def cmd_status(args):
-    from src.trader import get_balance, get_holdings
+    from src.trader import get_account_info
 
-    balance = get_balance()
+    balance, holdings = get_account_info()
     print("\n=== 계좌 현황 ===")
     print(f"  총 평가금액: {balance['total_eval']:>15,}원")
     print(f"  예수금:      {balance['cash']:>15,}원")
     print(f"  평가손익:    {balance['profit_loss']:>15,}원")
-
-    holdings = get_holdings()
     if holdings:
         print("\n=== 보유 종목 ===")
         print(f"  {'종목명':<12} {'수량':>6} {'평균가':>10} {'현재가':>10} {'수익률':>8} {'손익':>12}")
@@ -58,7 +56,10 @@ def cmd_history(args):
     print(f"  {'시각':<20} {'종목':>8} {'구분':>4} {'가격':>10} {'수량':>6} {'금액':>12} {'사유'}")
     print("  " + "-" * 76)
     for r in rows:
-        print(f"  {r['datetime']:<20} {r['stock_code']:>8} {r['action']:>4} {int(r['price']):>10,} {int(r['quantity']):>6} {int(r['amount']):>11,}원 {r['reason']}")
+        try:
+            print(f"  {r.get('datetime',''):>20} {r.get('stock_code',''):>8} {r.get('action',''):>4} {int(r.get('price',0)):>10,} {int(r.get('quantity',0)):>6} {int(r.get('amount',0)):>11,}원 {r.get('reason','')}")
+        except (ValueError, KeyError):
+            continue
     print()
 
 

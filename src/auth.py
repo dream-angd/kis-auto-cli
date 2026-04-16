@@ -86,12 +86,12 @@ def get_access_token():
 
 
 def get_headers(tr_id=""):
-    app_key, _ = _get_app_keys()
+    app_key, app_secret = _get_app_keys()
     headers = {
         "Content-Type": "application/json; charset=UTF-8",
         "authorization": f"Bearer {get_access_token()}",
         "appkey": app_key,
-        "appsecret": _get_app_keys()[1],
+        "appsecret": app_secret,
     }
     if tr_id:
         headers["tr_id"] = tr_id

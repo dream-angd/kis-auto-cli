@@ -1,5 +1,6 @@
 import csv
 import logging
+from logging.handlers import TimedRotatingFileHandler
 from datetime import datetime
 from pathlib import Path
 
@@ -11,17 +12,17 @@ _logger = logging.getLogger("kis-trader")
 _logger.setLevel(logging.DEBUG)
 
 if not _logger.handlers:
-    # 콘솔 핸들러
     ch = logging.StreamHandler()
     ch.setLevel(logging.INFO)
     ch.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
     _logger.addHandler(ch)
 
-    # 에러 파일 핸들러
-    today = datetime.now().strftime("%Y%m%d")
-    fh = logging.FileHandler(LOGS_DIR / f"error_{today}.log", encoding="utf-8")
+    fh = TimedRotatingFileHandler(
+        LOGS_DIR / "error.log", when="midnight", backupCount=30, encoding="utf-8"
+    )
     fh.setLevel(logging.ERROR)
     fh.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s %(message)s"))
+    fh.suffix = "%Y%m%d"
     _logger.addHandler(fh)
 
 

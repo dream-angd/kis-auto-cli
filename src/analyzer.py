@@ -11,8 +11,14 @@ def _calc_rsi(series, period=14):
     delta = series.diff()
     gain = delta.where(delta > 0, 0.0).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0.0)).rolling(window=period).mean()
-    rs = gain / loss.replace(0, float("inf"))
-    return 100 - (100 / (1 + rs))
+    rsi = pd.Series(index=series.index, dtype=float)
+    both_valid = (gain.notna()) & (loss.notna())
+    rsi[both_valid & (loss == 0)] = 100.0
+    rsi[both_valid & (gain == 0)] = 0.0
+    normal = both_valid & (loss > 0) & (gain >= 0)
+    rs = gain[normal] / loss[normal]
+    rsi[normal] = 100 - (100 / (1 + rs))
+    return rsi
 
 
 def _calc_macd(series, fast=12, slow=26, signal=9):
@@ -80,14 +86,29 @@ def analyze(stock_code, avg_price=0):
     dead_cross = prev["ma5"] >= prev["ma20"] and latest["ma5"] < latest["ma20"]
 
     rsi = latest["rsi"]
+    macd = latest["macd"]
+    macd_sig = latest["macd_signal"]
+    bb_lower = latest["bb_lower"]
+    bb_upper = latest["bb_upper"]
+    close = latest["close"]
 
-    if golden_cross and rsi < 70:
+    # 복합 매수: 골든크로스 + RSI < 70 + MACD 상향
+    if golden_cross and rsi < 70 and macd > macd_sig:
         return {
             "signal": "BUY",
-            "reason": f"골든크로스 (RSI: {rsi:.1f})",
+            "reason": f"골든크로스 + MACD 상향 (RSI: {rsi:.1f})",
             "current_price": current_price,
         }
 
+    # 볼린저 하단 근접 + RSI 과매도 → 매수
+    if close <= bb_lower and rsi < 30:
+        return {
+            "signal": "BUY",
+            "reason": f"볼린저 하단 돌파 + RSI 과매도 ({rsi:.1f})",
+            "current_price": current_price,
+        }
+
+    # 데드크로스 or 볼린저 상단 돌파 + RSI 과매수
     if dead_cross:
         return {
             "signal": "SELL",
@@ -95,4 +116,11 @@ def analyze(stock_code, avg_price=0):
             "current_price": current_price,
         }
 
-    return {"signal": "HOLD", "reason": f"대기 (RSI: {rsi:.1f})", "current_price": current_price}
+    if close >= bb_upper and rsi > 70:
+        return {
+            "signal": "SELL",
+            "reason": f"볼린저 상단 돌파 + RSI 과매수 ({rsi:.1f})",
+            "current_price": current_price,
+        }
+
+    return {"signal": "HOLD", "reason": f"대기 (RSI: {rsi:.1f}, MACD: {macd:.1f})", "current_price": current_price}

@@ -42,7 +42,10 @@ def buy(stock_code, amount, current_price=0):
         raise ValueError(f"매수 수량 0: 금액({amount}) < 현재가({current_price})")
 
     tr_id = "TTTC0802U" if get_mode() == "real" else "VTTC0802U"
-    return _order_request(tr_id, stock_code, qty)
+    result = _order_request(tr_id, stock_code, qty)
+    result["_qty"] = qty
+    result["_price"] = current_price
+    return result
 
 
 def sell(stock_code, quantity):
@@ -51,8 +54,8 @@ def sell(stock_code, quantity):
     return _order_request(tr_id, stock_code, quantity)
 
 
-def get_balance():
-    """예수금 및 총자산 조회."""
+def _inquire_balance_raw():
+    """잔고 조회 API 1회 호출 → 원본 응답 반환 (balance + holdings 공용)"""
     cano, acnt = _get_account()
     tr_id = "TTTC8434R" if get_mode() == "real" else "VTTC8434R"
     params = {
@@ -72,40 +75,21 @@ def get_balance():
     headers = get_headers(tr_id)
     resp = requests.get(url, headers=headers, params=params, timeout=10)
     resp.raise_for_status()
-    data = resp.json()
+    return resp.json()
+
+
+def get_account_info():
+    """잔고 + 보유종목을 한 번의 API 호출로 조회."""
+    data = _inquire_balance_raw()
 
     output2 = data.get("output2", [{}])
     summary = output2[0] if output2 else {}
-    return {
+    balance = {
         "total_eval": int(summary.get("tot_evlu_amt", 0)),
         "cash": int(summary.get("dnca_tot_amt", 0)),
         "profit_loss": int(summary.get("evlu_pfls_smtl_amt", 0)),
         "profit_rate": float(summary.get("evlu_pfls_rt", 0)),
     }
-
-
-def get_holdings():
-    """보유 종목 리스트 반환."""
-    cano, acnt = _get_account()
-    tr_id = "TTTC8434R" if get_mode() == "real" else "VTTC8434R"
-    params = {
-        "CANO": cano,
-        "ACNT_PRDT_CD": acnt,
-        "AFHR_FLPR_YN": "N",
-        "OFL_YN": "",
-        "INQR_DVSN": "02",
-        "UNPR_DVSN": "01",
-        "FUND_STTL_ICLD_YN": "N",
-        "FNCG_AMT_AUTO_RDPT_YN": "N",
-        "PRCS_DVSN": "01",
-        "CTX_AREA_FK100": "",
-        "CTX_AREA_NK100": "",
-    }
-    url = f"{get_base_url()}/uapi/domestic-stock/v1/trading/inquire-balance"
-    headers = get_headers(tr_id)
-    resp = requests.get(url, headers=headers, params=params, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
 
     holdings = []
     for item in data.get("output1", []):
@@ -121,4 +105,15 @@ def get_holdings():
             "profit_rate": float(item.get("evlu_pfls_rt", 0)),
             "profit_loss": int(item.get("evlu_pfls_amt", 0)),
         })
+
+    return balance, holdings
+
+
+def get_balance():
+    balance, _ = get_account_info()
+    return balance
+
+
+def get_holdings():
+    _, holdings = get_account_info()
     return holdings
