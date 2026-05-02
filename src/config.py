@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+BASE_DIR = Path(__file__).resolve().parent.parent
 DOMAIN_REAL = "https://openapi.koreainvestment.com:9443"
 DOMAIN_MOCK = "https://openapivts.koreainvestment.com:29443"
 
@@ -42,20 +43,25 @@ def get_account_no() -> tuple[str, str]:
 
 
 # --- 토큰 캐시 ---
+def get_data_dir() -> Path:
+    raw = os.getenv("KIS_DATA_DIR", "").strip()
+    return Path(raw).expanduser() if raw else BASE_DIR / ".kis"
+
+
 def get_token_cache_path() -> Path:
     """토큰 캐시 파일 경로. 디렉토리는 호출 측에서 생성한다."""
-    return Path.home() / ".kis" / "token_cache.json"
+    return get_data_dir() / "token_cache.json"
 
 
 # --- 상태 파일 ---
 def get_state_path() -> Path:
     """일별 거래 상태 파일 경로."""
-    return Path.home() / ".kis" / "state.json"
+    return get_data_dir() / "state.json"
 
 
 def get_status_path() -> Path:
     """프로세스 상태 파일 경로 (PID, 시작 시간 등)."""
-    return Path.home() / ".kis" / "status.json"
+    return get_data_dir() / "status.json"
 
 
 # --- 트레이딩 파라미터 ---
@@ -156,4 +162,4 @@ def is_scalp_trade_enabled() -> bool:
 
 
 def get_scalp_state_path() -> Path:
-    return Path.home() / ".kis" / "scalp_state.json"
+    return get_data_dir() / "scalp_state.json"

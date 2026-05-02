@@ -6,6 +6,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 .pip-tmp/
+.kis/
 logs/
 .vscode/
 .claude/settings.local.json
