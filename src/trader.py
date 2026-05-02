@@ -1,6 +1,8 @@
+import time
 import requests
 from src import config
 from src.auth import get_base_url, get_headers, get_mode
+from src.fetcher import _rate_limit
 
 
 def _get_account():
@@ -9,6 +11,7 @@ def _get_account():
 
 def _order_request(tr_id, stock_code, qty, price=0, order_type="01"):
     """주문 공통 요청. order_type: 01=시장가, 00=지정가"""
+    _rate_limit()
     cano, acnt = _get_account()
     url = f"{get_base_url()}/uapi/domestic-stock/v1/trading/order-cash"
     headers = get_headers(tr_id)
@@ -20,12 +23,17 @@ def _order_request(tr_id, stock_code, qty, price=0, order_type="01"):
         "ORD_QTY": str(qty),
         "ORD_UNPR": str(price) if order_type == "00" else "0",
     }
-    resp = requests.post(url, headers=headers, json=body, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-    if data.get("rt_cd") != "0":
-        raise RuntimeError(f"주문 실패: {data.get('msg1', data)}")
-    return data
+    for attempt in range(3):
+        resp = requests.post(url, headers=headers, json=body, timeout=10)
+        if resp.status_code == 429:
+            time.sleep(1 * (attempt + 1))
+            continue
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("rt_cd") != "0":
+            raise RuntimeError(f"주문 실패: {data.get('msg1', data)}")
+        return data
+    raise RuntimeError("주문 API 호출 실패: 429 Too Many Requests 반복")
 
 
 def buy(stock_code, amount, current_price=0):
@@ -52,6 +60,7 @@ def sell(stock_code, quantity):
 
 def _inquire_balance_raw():
     """잔고 조회 API 1회 호출 → 원본 응답 반환 (balance + holdings 공용)"""
+    _rate_limit()
     cano, acnt = _get_account()
     tr_id = "TTTC8434R" if get_mode() == "real" else "VTTC8434R"
     params = {
@@ -69,9 +78,14 @@ def _inquire_balance_raw():
     }
     url = f"{get_base_url()}/uapi/domestic-stock/v1/trading/inquire-balance"
     headers = get_headers(tr_id)
-    resp = requests.get(url, headers=headers, params=params, timeout=10)
-    resp.raise_for_status()
-    return resp.json()
+    for attempt in range(3):
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
+        if resp.status_code == 429:
+            time.sleep(1 * (attempt + 1))
+            continue
+        resp.raise_for_status()
+        return resp.json()
+    raise RuntimeError("잔고 조회 API 호출 실패: 429 Too Many Requests 반복")
 
 
 def get_account_info():
