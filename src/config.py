@@ -53,6 +53,11 @@ def get_state_path() -> Path:
     return Path.home() / ".kis" / "state.json"
 
 
+def get_status_path() -> Path:
+    """프로세스 상태 파일 경로 (PID, 시작 시간 등)."""
+    return Path.home() / ".kis" / "status.json"
+
+
 # --- 트레이딩 파라미터 ---
 def get_target_stocks() -> list[str]:
     raw = os.getenv("TARGET_STOCKS", "")

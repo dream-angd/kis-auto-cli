@@ -1,4 +1,5 @@
 import json
+import os
 import signal
 import time
 from datetime import date, datetime
@@ -113,6 +114,25 @@ def _check_circuit_breaker(state):
     return False
 
 
+def _write_status() -> None:
+    path = config.get_status_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({
+            "pid": os.getpid(),
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "mode": config.get_mode(),
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _clear_status() -> None:
+    path = config.get_status_path()
+    if path.exists():
+        path.unlink()
+
+
 def run_loop(interval_sec=300):
     running = True
 
@@ -122,6 +142,7 @@ def run_loop(interval_sec=300):
         running = False
 
     prev_handler = signal.signal(signal.SIGINT, signal_handler)
+    _write_status()
     state = _load_state()
 
     log_info(f"=== 자동매매 시작 (MODE: {config.get_mode()}) ===")
@@ -159,6 +180,7 @@ def run_loop(interval_sec=300):
                     break
                 time.sleep(1)
     finally:
+        _clear_status()
         signal.signal(signal.SIGINT, prev_handler)
 
     log_info("=== 자동매매 종료 ===")

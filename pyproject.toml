@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kis-auto-cli"
+version = "0.1.0"
+description = "KIS(한국투자증권) API 자동매매 CLI"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
+    "pandas>=2.0.0",
+    "holidays>=0.40",
+]
+
+[project.scripts]
+kis-trader = "main:main"
