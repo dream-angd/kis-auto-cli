@@ -125,7 +125,7 @@ def get_scalp_stock() -> str:
 
 
 def get_scalp_interval_sec() -> float:
-    return float(os.getenv("SCALP_INTERVAL_SEC", "5"))
+    return float(os.getenv("SCALP_INTERVAL_SEC", "2"))
 
 
 def get_scalp_max_buy_amount() -> int:
