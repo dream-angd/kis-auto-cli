@@ -39,6 +39,20 @@ def _calc_bollinger(series, window=20, num_std=2):
     return upper, ma, lower
 
 
+def _calc_atr(df, period=14):
+    """Wilder's SMMA 방식으로 ATR을 계산한다."""
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        (high - low),
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.ewm(com=period - 1, min_periods=period, adjust=False).mean()
+
+
 def add_indicators(df):
     df = df.copy()
     df["ma5"] = _calc_ma(df["close"], 5)
@@ -46,7 +60,28 @@ def add_indicators(df):
     df["rsi"] = _calc_rsi(df["close"])
     df["macd"], df["macd_signal"] = _calc_macd(df["close"])
     df["bb_upper"], df["bb_mid"], df["bb_lower"] = _calc_bollinger(df["close"])
+    df["atr"] = _calc_atr(df)
     return df
+
+
+def calc_position_size(current_price: int, atr: float, max_buy: int) -> int:
+    """ATR 기반 포지션 수량 산정.
+
+    수량 = risk_amount / stop_distance, 단 max_buy / current_price 이하로 제한.
+    ATR이 0이면 max_buy 기준 수량을 fallback으로 사용한다.
+    """
+    multiplier = config.get_atr_multiplier()
+    risk_pct = config.get_atr_risk_pct()
+
+    max_qty = max(1, max_buy // current_price)
+
+    if atr <= 0 or current_price <= 0:
+        return max_qty
+
+    risk_amount = max_buy * risk_pct
+    stop_distance = atr * multiplier
+    qty = int(risk_amount / stop_distance)
+    return max(1, min(qty, max_qty))
 
 
 def _check_stop_loss_take_profit(current_price, avg_price):
@@ -72,15 +107,17 @@ def analyze(stock_code, avg_price=0):
     if avg_price > 0:
         signal, reason = _check_stop_loss_take_profit(current_price, avg_price)
         if signal == "SELL":
-            return {"signal": "SELL", "reason": reason, "current_price": current_price}
+            return {"signal": "SELL", "reason": reason, "current_price": current_price, "atr": 0.0}
 
     df = get_daily_ohlcv(stock_code, days=60)
     if df.empty or len(df) < 26:
-        return {"signal": "HOLD", "reason": "데이터 부족", "current_price": current_price}
+        return {"signal": "HOLD", "reason": "데이터 부족", "current_price": current_price, "atr": 0.0}
 
     df = add_indicators(df)
     latest = df.iloc[-1]
     prev = df.iloc[-2]
+
+    atr = float(latest["atr"]) if pd.notna(latest["atr"]) else 0.0
 
     # 골든크로스: MA5가 MA20 위로 돌파
     golden_cross = prev["ma5"] <= prev["ma20"] and latest["ma5"] > latest["ma20"]
@@ -100,6 +137,7 @@ def analyze(stock_code, avg_price=0):
             "signal": "BUY",
             "reason": f"골든크로스 + MACD 상향 (RSI: {rsi:.1f})",
             "current_price": current_price,
+            "atr": atr,
         }
 
     # 볼린저 하단 근접 + RSI 과매도 → 매수
@@ -108,6 +146,7 @@ def analyze(stock_code, avg_price=0):
             "signal": "BUY",
             "reason": f"볼린저 하단 돌파 + RSI 과매도 ({rsi:.1f})",
             "current_price": current_price,
+            "atr": atr,
         }
 
     # 데드크로스 or 볼린저 상단 돌파 + RSI 과매수
@@ -116,6 +155,7 @@ def analyze(stock_code, avg_price=0):
             "signal": "SELL",
             "reason": f"데드크로스 (RSI: {rsi:.1f})",
             "current_price": current_price,
+            "atr": atr,
         }
 
     if close >= bb_upper and rsi > 70:
@@ -123,6 +163,7 @@ def analyze(stock_code, avg_price=0):
             "signal": "SELL",
             "reason": f"볼린저 상단 돌파 + RSI 과매수 ({rsi:.1f})",
             "current_price": current_price,
+            "atr": atr,
         }
 
-    return {"signal": "HOLD", "reason": f"대기 (RSI: {rsi:.1f}, MACD: {macd:.1f})", "current_price": current_price}
+    return {"signal": "HOLD", "reason": f"대기 (RSI: {rsi:.1f}, MACD: {macd:.1f})", "current_price": current_price, "atr": atr}

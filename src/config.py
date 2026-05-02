@@ -83,3 +83,14 @@ def get_stop_loss_pct() -> float:
 
 def get_take_profit_pct() -> float:
     return float(os.getenv("TAKE_PROFIT_PCT", "5.0"))
+
+
+# --- ATR 기반 포지션 사이징 ---
+def get_atr_multiplier() -> float:
+    """ATR 기반 손절 거리 배수. 기본값 2.0 (2×ATR 손절 거리)."""
+    return float(os.getenv("ATR_MULTIPLIER", "2.0"))
+
+
+def get_atr_risk_pct() -> float:
+    """1회 매수 한도 대비 허용 손실 비율. 기본값 0.01 (1%)."""
+    return float(os.getenv("ATR_RISK_PCT", "0.01"))

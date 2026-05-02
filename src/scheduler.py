@@ -7,7 +7,7 @@ from datetime import date, datetime
 import holidays
 
 from src import config
-from src.analyzer import analyze
+from src.analyzer import analyze, calc_position_size
 from src.trader import buy, sell, get_account_info
 from src.logger import log_info, log_error, log_trade, log_signal
 
@@ -80,21 +80,25 @@ def _check_targets(holdings, balance, state):
     for code in target_stocks:
         if code in holdings_codes:
             continue
-        if available_cash < max_buy:
-            log_info(f"매수 가능 현금 부족: {available_cash:,}원 < {max_buy:,}원")
+        if available_cash <= 0:
             break
 
         result = analyze(code)
         log_signal(code, result["signal"], result["current_price"], result["reason"])
 
         if result["signal"] == "BUY":
+            atr = result.get("atr", 0.0)
+            qty = calc_position_size(result["current_price"], atr, max_buy)
+            amount = qty * result["current_price"]
+            if available_cash < amount:
+                log_info(f"매수 가능 현금 부족: {available_cash:,}원 < {amount:,}원 (ATR={atr:.0f})")
+                continue
             try:
-                order = buy(code, max_buy, result["current_price"])
-                qty = order.get("_qty", max_buy // result["current_price"])
-                available_cash -= qty * result["current_price"]
+                order = buy(code, amount, result["current_price"])
+                available_cash -= amount
                 log_trade(
                     code, "BUY", result["current_price"],
-                    qty, result["current_price"] * qty,
+                    qty, amount,
                     result["reason"],
                 )
             except Exception as e:
