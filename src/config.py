@@ -78,3 +78,60 @@ def get_stop_loss_pct() -> float:
 
 def get_take_profit_pct() -> float:
     return float(os.getenv("TAKE_PROFIT_PCT", "5.0"))
+
+
+# --- Scalp strategy ---
+def _get_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def get_scalp_stock() -> str:
+    raw = os.getenv("SCALP_STOCK", "").strip()
+    if raw:
+        return raw
+    targets = get_target_stocks()
+    return targets[0] if targets else ""
+
+
+def get_scalp_interval_sec() -> float:
+    return float(os.getenv("SCALP_INTERVAL_SEC", "5"))
+
+
+def get_scalp_max_buy_amount() -> int:
+    return int(os.getenv("SCALP_MAX_BUY_AMOUNT", "100000"))
+
+
+def get_scalp_window_size() -> int:
+    return max(4, int(os.getenv("SCALP_WINDOW_SIZE", "6")))
+
+
+def get_scalp_min_momentum_pct() -> float:
+    return float(os.getenv("SCALP_MIN_MOMENTUM_PCT", "0.2"))
+
+
+def get_scalp_take_profit_pct() -> float:
+    return float(os.getenv("SCALP_TAKE_PROFIT_PCT", "0.5"))
+
+
+def get_scalp_stop_loss_pct() -> float:
+    return float(os.getenv("SCALP_STOP_LOSS_PCT", "-0.3"))
+
+
+def get_scalp_trailing_drop_pct() -> float:
+    return float(os.getenv("SCALP_TRAILING_DROP_PCT", "0.2"))
+
+
+def get_scalp_max_hold_sec() -> int:
+    return int(os.getenv("SCALP_MAX_HOLD_SEC", "300"))
+
+
+def is_scalp_trade_enabled() -> bool:
+    # Default to real orders only in mock mode. Real mode must opt in explicitly.
+    return _get_bool("SCALP_TRADE_ENABLED", get_mode() == "mock")
+
+
+def get_scalp_state_path() -> Path:
+    return Path.home() / ".kis" / "scalp_state.json"

@@ -1,7 +1,7 @@
 import csv
 import logging
-from logging.handlers import TimedRotatingFileHandler
 from datetime import datetime
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -18,7 +18,10 @@ if not _logger.handlers:
     _logger.addHandler(ch)
 
     fh = TimedRotatingFileHandler(
-        LOGS_DIR / "error.log", when="midnight", backupCount=30, encoding="utf-8"
+        LOGS_DIR / "error.log",
+        when="midnight",
+        backupCount=30,
+        encoding="utf-8",
     )
     fh.setLevel(logging.ERROR)
     fh.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s %(message)s"))
@@ -35,7 +38,10 @@ def log_error(msg):
 
 
 def log_trade(stock_code, action, price, quantity, amount, reason=""):
-    log_info(f"{stock_code} | 신호: {action} | 가격: {price:,} | 수량: {quantity} | 금액: {amount:,} | {reason}")
+    log_info(
+        f"{stock_code} | action={action} | price={price:,} | "
+        f"qty={quantity} | amount={amount:,} | {reason}"
+    )
 
     today = datetime.now().strftime("%Y%m%d")
     csv_path = LOGS_DIR / f"trades_{today}.csv"
@@ -57,5 +63,4 @@ def log_trade(stock_code, action, price, quantity, amount, reason=""):
 
 
 def log_signal(stock_code, signal, price, reason=""):
-    action_str = {"BUY": "BUY ", "SELL": "SELL", "HOLD": "HOLD"}
-    log_info(f"{stock_code} | 신호: {action_str.get(signal, signal)} | 가격: {price:,} | 결과: {reason}")
+    log_info(f"{stock_code} | signal={signal} | price={price:,} | reason={reason}")

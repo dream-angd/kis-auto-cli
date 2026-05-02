@@ -2,6 +2,8 @@
 token_cache.json
 __pycache__/
 *.pyc
+.venv/
+.pip-tmp/
 logs/
 .vscode/
 .claude/settings.local.json
