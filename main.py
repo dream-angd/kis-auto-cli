@@ -37,11 +37,11 @@ def cmd_history(args):
     from datetime import datetime
     import csv
 
-    today = datetime.now().strftime("%Y%m%d")
-    csv_path = Path(__file__).parent / "logs" / f"trades_{today}.csv"
+    date_str = args.date if args.date else datetime.now().strftime("%Y%m%d")
+    csv_path = Path(__file__).parent / "logs" / f"trades_{date_str}.csv"
 
     if not csv_path.exists():
-        print("\n  오늘 매매 이력 없음\n")
+        print(f"\n  {date_str} 매매 이력 없음\n")
         return
 
     with open(csv_path, "r", encoding="utf-8") as f:
@@ -49,10 +49,10 @@ def cmd_history(args):
         rows = list(reader)
 
     if not rows:
-        print("\n  오늘 매매 이력 없음\n")
+        print(f"\n  {date_str} 매매 이력 없음\n")
         return
 
-    print(f"\n=== 매매 이력 ({today}) ===")
+    print(f"\n=== 매매 이력 ({date_str}) ===")
     print(f"  {'시각':<20} {'종목':>8} {'구분':>4} {'가격':>10} {'수량':>6} {'금액':>12} {'사유'}")
     print("  " + "-" * 76)
     for r in rows:
@@ -65,10 +65,22 @@ def cmd_history(args):
 
 def cmd_analyze(args):
     from src.analyzer import analyze
+    from src.trader import get_holdings
 
     code = args.code
     print(f"\n=== {code} 분석 ===")
-    result = analyze(code)
+
+    avg_price = 0
+    try:
+        for h in get_holdings():
+            if h["stock_code"] == code:
+                avg_price = h["avg_price"]
+                print(f"  보유중 - 평균매입가: {avg_price:,}원")
+                break
+    except Exception:
+        pass
+
+    result = analyze(code, avg_price=avg_price)
     signal_emoji = {"BUY": "[매수]", "SELL": "[매도]", "HOLD": "[대기]"}
     print(f"  신호:   {signal_emoji.get(result['signal'], '')} {result['signal']}")
     print(f"  현재가: {result['current_price']:,}원")
@@ -90,7 +102,8 @@ def main():
     p_status = sub.add_parser("status", help="잔고/보유 종목 출력")
     p_status.set_defaults(func=cmd_status)
 
-    p_history = sub.add_parser("history", help="오늘 매매 이력 출력")
+    p_history = sub.add_parser("history", help="매매 이력 출력")
+    p_history.add_argument("--date", default=None, metavar="YYYYMMDD", help="조회 날짜 (기본: 오늘)")
     p_history.set_defaults(func=cmd_history)
 
     p_analyze = sub.add_parser("analyze", help="종목 분석")

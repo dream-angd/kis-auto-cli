@@ -9,14 +9,16 @@ def _calc_ma(series, window):
 
 def _calc_rsi(series, period=14):
     delta = series.diff()
-    gain = delta.where(delta > 0, 0.0).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0.0)).rolling(window=period).mean()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    # Wilder's SMMA: alpha = 1/period (com = period - 1)
+    avg_gain = gain.ewm(com=period - 1, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(com=period - 1, min_periods=period, adjust=False).mean()
     rsi = pd.Series(index=series.index, dtype=float)
-    both_valid = (gain.notna()) & (loss.notna())
-    rsi[both_valid & (loss == 0)] = 100.0
-    rsi[both_valid & (gain == 0)] = 0.0
-    normal = both_valid & (loss > 0) & (gain >= 0)
-    rs = gain[normal] / loss[normal]
+    valid = avg_gain.notna() & avg_loss.notna()
+    rsi[valid & (avg_loss == 0)] = 100.0
+    normal = valid & (avg_loss > 0)
+    rs = avg_gain[normal] / avg_loss[normal]
     rsi[normal] = 100 - (100 / (1 + rs))
     return rsi
 
