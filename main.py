@@ -63,6 +63,22 @@ def cmd_history(args):
     print()
 
 
+def cmd_report(args):
+    from datetime import datetime
+    from src.reporter import generate_daily_report
+
+    date_str = args.date if args.date else datetime.now().strftime("%Y%m%d")
+    display_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+    print(f"\n=== 리포트 생성 ({display_date}) ===")
+    try:
+        paths = generate_daily_report(date_str)
+        for p in paths:
+            print(f"  생성: {p}")
+    except Exception as e:
+        print(f"  오류: {e}", file=sys.stderr)
+    print()
+
+
 def cmd_analyze(args):
     from src.analyzer import analyze
     from src.trader import get_holdings
@@ -109,6 +125,10 @@ def main():
     p_analyze = sub.add_parser("analyze", help="종목 분석")
     p_analyze.add_argument("code", help="종목코드 (예: 005930)")
     p_analyze.set_defaults(func=cmd_analyze)
+
+    p_report = sub.add_parser("report", help="일별 리포트 (재)생성")
+    p_report.add_argument("--date", default=None, metavar="YYYYMMDD", help="대상 날짜 (기본: 오늘)")
+    p_report.set_defaults(func=cmd_report)
 
     args = parser.parse_args()
     if not args.command:

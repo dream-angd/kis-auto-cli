@@ -94,3 +94,9 @@ def get_atr_multiplier() -> float:
 def get_atr_risk_pct() -> float:
     """1회 매수 한도 대비 허용 손실 비율. 기본값 0.01 (1%)."""
     return float(os.getenv("ATR_RISK_PCT", "0.01"))
+
+
+# --- 로그 디렉토리 ---
+def get_logs_dir() -> Path:
+    """logs/ 디렉토리 절대 경로. logger.py의 LOGS_DIR과 동일 경로."""
+    return Path(__file__).resolve().parent.parent / "logs"
