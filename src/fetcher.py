@@ -1,18 +1,21 @@
 import time
+import threading
 import requests
 import pandas as pd
 from src.auth import get_base_url, get_headers, _get_app_keys
 
 _last_call_time = 0
+_rate_lock = threading.Lock()
 _MIN_INTERVAL = 0.05  # 초당 20건 제한 → 50ms 간격
 
 
 def _rate_limit():
     global _last_call_time
-    elapsed = time.time() - _last_call_time
-    if elapsed < _MIN_INTERVAL:
-        time.sleep(_MIN_INTERVAL - elapsed)
-    _last_call_time = time.time()
+    with _rate_lock:
+        elapsed = time.time() - _last_call_time
+        if elapsed < _MIN_INTERVAL:
+            time.sleep(_MIN_INTERVAL - elapsed)
+        _last_call_time = time.time()
 
 
 def _api_get(path, params, tr_id):

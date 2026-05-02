@@ -8,14 +8,13 @@ import holidays
 
 from src import config
 from src.analyzer import analyze, calc_position_size
-from src.trader import buy, sell, get_account_info
-from src.logger import log_info, log_error, log_trade, log_signal
+from src.logger import log_error, log_info, log_signal, log_trade
+from src.trader import buy, get_account_info, sell
 
 KR_HOLIDAYS = holidays.KR()
 
 
 def _load_state() -> dict:
-    """오늘 날짜 기준으로 상태를 로드한다. 날짜 불일치·파일 없음·파싱 오류 시 초기화."""
     today = date.today().isoformat()
     path = config.get_state_path()
     if path.exists():
@@ -29,10 +28,17 @@ def _load_state() -> dict:
 
 
 def _save_state(state: dict) -> None:
-    """상태를 파일에 저장한다. 디렉토리가 없으면 생성한다."""
     path = config.get_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_state() -> dict:
+    return _load_state()
+
+
+def save_state(state: dict) -> None:
+    _save_state(state)
 
 
 def is_market_open():
@@ -46,8 +52,12 @@ def is_market_open():
     return market_start <= now <= market_end
 
 
-def _check_holdings(holdings, state):
+def _check_holdings(holdings, state, excluded_codes=None):
+    excluded_codes = excluded_codes or set()
     for h in holdings:
+        if h["stock_code"] in excluded_codes:
+            continue
+
         result = analyze(h["stock_code"], avg_price=h["avg_price"])
         log_signal(h["stock_code"], result["signal"], result["current_price"], result["reason"])
 
@@ -62,16 +72,20 @@ def _check_holdings(holdings, state):
                     state["consecutive_losses"] = 0
                 _save_state(state)
                 log_trade(
-                    h["stock_code"], "SELL", result["current_price"],
-                    h["quantity"], result["current_price"] * h["quantity"],
+                    h["stock_code"],
+                    "SELL",
+                    result["current_price"],
+                    h["quantity"],
+                    result["current_price"] * h["quantity"],
                     result["reason"],
                     pnl=pnl,
                 )
             except Exception as e:
-                log_error(f"매도 주문 실패 [{h['stock_code']}]: {e}")
+                log_error(f"Swing sell failed [{h['stock_code']}]: {e}")
 
 
-def _check_targets(holdings, balance, state):
+def _check_targets(holdings, balance, state, excluded_codes=None):
+    excluded_codes = excluded_codes or set()
     target_stocks = config.get_target_stocks()
     max_buy = config.get_max_buy_amount()
     available_cash = balance["cash"]
@@ -79,6 +93,8 @@ def _check_targets(holdings, balance, state):
     holdings_codes = {h["stock_code"] for h in holdings}
 
     for code in target_stocks:
+        if code in excluded_codes:
+            continue
         if code in holdings_codes:
             continue
         if available_cash <= 0:
@@ -98,12 +114,15 @@ def _check_targets(holdings, balance, state):
                 order = buy(code, amount, result["current_price"])
                 available_cash -= amount
                 log_trade(
-                    code, "BUY", result["current_price"],
-                    qty, amount,
+                    code,
+                    "BUY",
+                    result["current_price"],
+                    qty,
+                    amount,
                     result["reason"],
                 )
             except Exception as e:
-                log_error(f"매수 주문 실패 [{code}]: {e}")
+                log_error(f"Swing buy failed [{code}]: {e}")
 
 
 def _check_circuit_breaker(state):
@@ -111,10 +130,13 @@ def _check_circuit_breaker(state):
     max_consecutive = config.get_max_consecutive_losses()
 
     if abs(state["daily_loss"]) >= max_daily_loss:
-        log_error(f"서킷 브레이커 발동: 일일 손실 {state['daily_loss']:,.0f}원 (한도: {max_daily_loss:,.0f}원)")
+        log_error(
+            f"Circuit breaker: daily PnL {state['daily_loss']:,.0f}, "
+            f"limit {max_daily_loss:,.0f}"
+        )
         return True
     if state["consecutive_losses"] >= max_consecutive:
-        log_error(f"서킷 브레이커 발동: 연속 손실 {state['consecutive_losses']}회")
+        log_error(f"Circuit breaker: consecutive losses {state['consecutive_losses']}")
         return True
     return False
 
@@ -201,49 +223,61 @@ def _maybe_generate_report() -> None:
         log_error(f"일별 리포트 생성 실패: {e}")
 
 
+def run_swing_cycle(state, excluded_codes=None):
+    if _check_circuit_breaker(state):
+        log_info("Swing strategy stopped by circuit breaker.")
+        return False
+
+    try:
+        balance, holdings = get_account_info()
+        _check_holdings(holdings, state, excluded_codes=excluded_codes)
+        _check_targets(holdings, balance, state, excluded_codes=excluded_codes)
+    except Exception as e:
+        log_error(f"Swing cycle failed: {e}")
+    return True
+
+
+def _log_closed_market_message():
+    now = datetime.now()
+    if now.hour < 9 or (now.hour == 9 and now.minute < 10):
+        log_info("Waiting for market open...")
+        return False
+    if now.hour > 15 or (now.hour == 15 and now.minute >= 30):
+        log_info("Market closed. Auto trading finished for today.")
+        return True
+    log_info("Waiting outside market hours...")
+    return False
+
+
 def run_loop(interval_sec=300):
     running = True
 
     def signal_handler(sig, frame):
         nonlocal running
-        log_info("종료 신호 수신. Graceful shutdown...")
+        log_info("Shutdown signal received. Graceful shutdown...")
         running = False
 
     prev_handler = signal.signal(signal.SIGINT, signal_handler)
     _write_status()
     state = _load_state()
 
-    log_info(f"=== 자동매매 시작 (MODE: {config.get_mode()}) ===")
-    log_info(f"감시 종목: {','.join(config.get_target_stocks())}")
-    log_info(f"매수 한도: {config.get_max_buy_amount()}원")
-    log_info(f"실행 간격: {interval_sec}초")
+    log_info(f"=== Swing strategy started (MODE: {config.get_mode()}) ===")
+    log_info(f"Targets: {','.join(config.get_target_stocks())}")
+    log_info(f"Max buy amount: {config.get_max_buy_amount()}")
+    log_info(f"Interval: {interval_sec}s")
 
     try:
         while running:
             if not is_market_open():
-                now = datetime.now()
-                if now.hour < 9 or (now.hour == 9 and now.minute < 10):
-                    log_info("장 시작 전 대기 중...")
-                elif now.hour > 15 or (now.hour == 15 and now.minute >= 30):
-                    log_info("장 마감. 오늘 자동매매 종료.")
+                if _log_closed_market_message():
                     break
-                else:
-                    log_info("장외 시간 대기 중...")
                 time.sleep(60)
                 continue
 
             _snapshot_holdings_at_open()
 
-            if _check_circuit_breaker(state):
-                log_info("서킷 브레이커 발동으로 거래 중단.")
+            if not run_swing_cycle(state):
                 break
-
-            try:
-                balance, holdings = get_account_info()
-                _check_holdings(holdings, state)
-                _check_targets(holdings, balance, state)
-            except Exception as e:
-                log_error(f"루프 실행 중 오류: {e}")
 
             for _ in range(interval_sec):
                 if not running:
@@ -254,4 +288,4 @@ def run_loop(interval_sec=300):
         _maybe_generate_report()
         signal.signal(signal.SIGINT, prev_handler)
 
-    log_info("=== 자동매매 종료 ===")
+    log_info("=== Swing strategy stopped ===")
