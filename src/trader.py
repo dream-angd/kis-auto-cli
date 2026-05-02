@@ -1,18 +1,10 @@
-import os
 import requests
+from src import config
 from src.auth import get_base_url, get_headers, get_mode
 
 
 def _get_account():
-    mode = get_mode()
-    if mode == "real":
-        acct = os.getenv("KIS_ACCOUNT_NO", "")
-    else:
-        acct = os.getenv("KIS_MOCK_ACCOUNT_NO", os.getenv("KIS_ACCOUNT_NO", ""))
-    parts = acct.split("-")
-    if len(parts) != 2:
-        raise ValueError(f"계좌번호 형식 오류: {acct} (예: 44407084-01)")
-    return parts[0], parts[1]
+    return config.get_account_no()
 
 
 def _order_request(tr_id, stock_code, qty, price=0, order_type="01"):

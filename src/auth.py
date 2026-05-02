@@ -1,41 +1,36 @@
-import os
 import json
+import os
 import time
 import requests
-from pathlib import Path
-from dotenv import load_dotenv
 
-load_dotenv()
+from src import config
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-TOKEN_CACHE_FILE = BASE_DIR / "token_cache.json"
-
-DOMAIN_REAL = "https://openapi.koreainvestment.com:9443"
-DOMAIN_MOCK = "https://openapivts.koreainvestment.com:29443"
+# 하위 호환을 위한 wrapper (다른 모듈이 from src.auth import get_mode/get_base_url 사용 중)
+get_mode = config.get_mode
+get_base_url = config.get_base_url
+_get_app_keys = config.get_app_keys
 
 
-def get_mode():
-    return os.getenv("MODE", "mock").lower()
+def _ensure_cache_dir(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
 
 
-def get_base_url():
-    return DOMAIN_REAL if get_mode() == "real" else DOMAIN_MOCK
-
-
-def _get_app_keys():
-    mode = get_mode()
-    if mode == "real":
-        return os.getenv("KIS_APP_KEY"), os.getenv("KIS_APP_SECRET")
-    return os.getenv("KIS_MOCK_APP_KEY"), os.getenv("KIS_MOCK_APP_SECRET")
+def _restrict_permissions(path):
+    """POSIX 환경에서 토큰 파일 권한을 0o600으로 제한. Windows에서는 무시."""
+    if os.name == "posix":
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
 
 
 def _load_token_cache():
-    if not TOKEN_CACHE_FILE.exists():
+    cache_path = config.get_token_cache_path()
+    if not cache_path.exists():
         return None
-    with open(TOKEN_CACHE_FILE, "r") as f:
+    with open(cache_path, "r") as f:
         cache = json.load(f)
-    mode = get_mode()
-    if cache.get("mode") != mode:
+    if cache.get("mode") != config.get_mode():
         return None
     expires_at = cache.get("expires_at", 0)
     if time.time() >= expires_at - 60:
@@ -44,21 +39,24 @@ def _load_token_cache():
 
 
 def _save_token_cache(access_token, expires_in=86400):
+    cache_path = config.get_token_cache_path()
+    _ensure_cache_dir(cache_path)
     cache = {
         "access_token": access_token,
-        "mode": get_mode(),
+        "mode": config.get_mode(),
         "expires_at": time.time() + expires_in,
     }
-    with open(TOKEN_CACHE_FILE, "w") as f:
+    with open(cache_path, "w") as f:
         json.dump(cache, f, indent=2)
+    _restrict_permissions(cache_path)
 
 
 def _request_token():
-    app_key, app_secret = _get_app_keys()
+    app_key, app_secret = config.get_app_keys()
     if not app_key or not app_secret:
         raise ValueError("APP_KEY 또는 APP_SECRET이 .env에 설정되지 않았습니다.")
 
-    url = f"{get_base_url()}/oauth2/tokenP"
+    url = f"{config.get_base_url()}/oauth2/tokenP"
     headers = {"Content-Type": "application/json; charset=UTF-8"}
     body = {
         "grant_type": "client_credentials",
@@ -86,7 +84,7 @@ def get_access_token():
 
 
 def get_headers(tr_id=""):
-    app_key, app_secret = _get_app_keys()
+    app_key, app_secret = config.get_app_keys()
     headers = {
         "Content-Type": "application/json; charset=UTF-8",
         "authorization": f"Bearer {get_access_token()}",

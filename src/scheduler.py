@@ -1,10 +1,10 @@
-import os
 import signal
 import time
 from datetime import datetime
 
 import holidays
 
+from src import config
 from src.analyzer import analyze
 from src.trader import buy, sell, get_account_info
 from src.logger import log_info, log_error, log_trade, log_signal
@@ -47,15 +47,14 @@ def _check_holdings(holdings, state):
 
 
 def _check_targets(holdings, balance, state):
-    target_stocks = os.getenv("TARGET_STOCKS", "").split(",")
-    max_buy = int(os.getenv("MAX_BUY_AMOUNT", 500000))
+    target_stocks = config.get_target_stocks()
+    max_buy = config.get_max_buy_amount()
     available_cash = balance["cash"]
 
     holdings_codes = {h["stock_code"] for h in holdings}
 
     for code in target_stocks:
-        code = code.strip()
-        if not code or code in holdings_codes:
+        if code in holdings_codes:
             continue
         if available_cash < max_buy:
             log_info(f"매수 가능 현금 부족: {available_cash:,}원 < {max_buy:,}원")
@@ -79,8 +78,8 @@ def _check_targets(holdings, balance, state):
 
 
 def _check_circuit_breaker(state):
-    max_daily_loss = float(os.getenv("MAX_DAILY_LOSS", "100000"))
-    max_consecutive = int(os.getenv("MAX_CONSECUTIVE_LOSSES", "3"))
+    max_daily_loss = config.get_max_daily_loss()
+    max_consecutive = config.get_max_consecutive_losses()
 
     if abs(state["daily_loss"]) >= max_daily_loss:
         log_error(f"서킷 브레이커 발동: 일일 손실 {state['daily_loss']:,.0f}원 (한도: {max_daily_loss:,.0f}원)")
@@ -102,9 +101,9 @@ def run_loop(interval_sec=300):
     prev_handler = signal.signal(signal.SIGINT, signal_handler)
     state = {"daily_loss": 0, "consecutive_losses": 0}
 
-    log_info(f"=== 자동매매 시작 (MODE: {os.getenv('MODE', 'mock')}) ===")
-    log_info(f"감시 종목: {os.getenv('TARGET_STOCKS', '')}")
-    log_info(f"매수 한도: {os.getenv('MAX_BUY_AMOUNT', '500000')}원")
+    log_info(f"=== 자동매매 시작 (MODE: {config.get_mode()}) ===")
+    log_info(f"감시 종목: {','.join(config.get_target_stocks())}")
+    log_info(f"매수 한도: {config.get_max_buy_amount()}원")
     log_info(f"실행 간격: {interval_sec}초")
 
     try:
