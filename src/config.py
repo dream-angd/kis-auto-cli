@@ -47,6 +47,12 @@ def get_token_cache_path() -> Path:
     return Path.home() / ".kis" / "token_cache.json"
 
 
+# --- 상태 파일 ---
+def get_state_path() -> Path:
+    """일별 거래 상태 파일 경로."""
+    return Path.home() / ".kis" / "state.json"
+
+
 # --- 트레이딩 파라미터 ---
 def get_target_stocks() -> list[str]:
     raw = os.getenv("TARGET_STOCKS", "")

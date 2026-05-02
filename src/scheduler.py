@@ -1,6 +1,7 @@
+import json
 import signal
 import time
-from datetime import datetime
+from datetime import date, datetime
 
 import holidays
 
@@ -10,6 +11,27 @@ from src.trader import buy, sell, get_account_info
 from src.logger import log_info, log_error, log_trade, log_signal
 
 KR_HOLIDAYS = holidays.KR()
+
+
+def _load_state() -> dict:
+    """오늘 날짜 기준으로 상태를 로드한다. 날짜 불일치·파일 없음·파싱 오류 시 초기화."""
+    today = date.today().isoformat()
+    path = config.get_state_path()
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if data.get("date") == today:
+                return data
+        except Exception:
+            pass
+    return {"date": today, "daily_loss": 0, "consecutive_losses": 0}
+
+
+def _save_state(state: dict) -> None:
+    """상태를 파일에 저장한다. 디렉토리가 없으면 생성한다."""
+    path = config.get_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def is_market_open():
@@ -31,12 +53,13 @@ def _check_holdings(holdings, state):
         if result["signal"] == "SELL":
             try:
                 sell(h["stock_code"], h["quantity"])
-                pnl = h["profit_loss"]
+                pnl = (result["current_price"] - h["avg_price"]) * h["quantity"]
                 state["daily_loss"] += pnl
                 if pnl < 0:
                     state["consecutive_losses"] += 1
                 else:
                     state["consecutive_losses"] = 0
+                _save_state(state)
                 log_trade(
                     h["stock_code"], "SELL", result["current_price"],
                     h["quantity"], result["current_price"] * h["quantity"],
@@ -99,7 +122,7 @@ def run_loop(interval_sec=300):
         running = False
 
     prev_handler = signal.signal(signal.SIGINT, signal_handler)
-    state = {"daily_loss": 0, "consecutive_losses": 0}
+    state = _load_state()
 
     log_info(f"=== 자동매매 시작 (MODE: {config.get_mode()}) ===")
     log_info(f"감시 종목: {','.join(config.get_target_stocks())}")
