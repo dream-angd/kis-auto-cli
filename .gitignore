@@ -10,3 +10,5 @@ __pycache__/
 logs/
 .vscode/
 .claude/settings.local.json
+docs/
+specs/
