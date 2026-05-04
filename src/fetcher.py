@@ -61,6 +61,34 @@ def get_current_price(stock_code):
     }
 
 
+def get_orderbook(stock_code):
+    """호가 잔량 조회. 매수/매도 총잔량과 비율 반환.
+
+    bid_ask_ratio = 총매수잔량 / 총매도잔량.
+      > 1.0  → 매수세 우위 (매수자 더 많음)
+      < 1.0  → 매도세 우위
+    호가가 비어있는 경우(거래정지 등) ratio=0.
+    """
+    params = {
+        "FID_COND_MRKT_DIV_CODE": "J",
+        "FID_INPUT_ISCD": stock_code,
+    }
+    data = _api_get(
+        "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+        params,
+        "FHKST01010200",
+    )
+    output1 = data.get("output1") or {}
+    total_bid = int(output1.get("total_bidp_rsqn", 0))
+    total_ask = int(output1.get("total_askp_rsqn", 0))
+    ratio = (total_bid / total_ask) if total_ask > 0 else 0.0
+    return {
+        "total_bid_qty": total_bid,
+        "total_ask_qty": total_ask,
+        "bid_ask_ratio": ratio,
+    }
+
+
 def get_daily_ohlcv(stock_code, days=60):
     from datetime import datetime, timedelta
     end_date = datetime.now().strftime("%Y%m%d")

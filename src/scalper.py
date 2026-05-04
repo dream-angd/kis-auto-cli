@@ -4,7 +4,7 @@ from collections import deque
 from datetime import date
 
 from src import config
-from src.fetcher import get_current_price
+from src.fetcher import get_current_price, get_orderbook
 from src.logger import log_error, log_info, log_trade
 from src.trader import buy, get_holdings, sell
 
@@ -129,8 +129,10 @@ class ScalpMonitor:
 
     def _save_state(self):
         path = config.get_scalp_state_path(self.stock_code)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8")
+        config.atomic_write_text(
+            path,
+            json.dumps(self.state, ensure_ascii=False, indent=2),
+        )
 
     def _has_position(self):
         return int(self.state.get("position_qty", 0)) > 0
@@ -149,9 +151,31 @@ class ScalpMonitor:
         breakout = price >= max(previous)
         rising = series[-1] > series[-2] > series[-3]
 
-        if breakout and rising and momentum_pct >= config.get_scalp_min_momentum_pct():
+        if not (breakout and rising and momentum_pct >= config.get_scalp_min_momentum_pct()):
+            return False, f"hold momentum {momentum_pct:.2f}%"
+
+        # 1차 통과 — 호가 잔량으로 매수세 검증 (가짜 풀돌이 필터)
+        min_ratio = config.get_scalp_bid_ask_ratio_min()
+        if min_ratio <= 0:
+            # 호가 검증 비활성
             return True, f"breakout momentum {momentum_pct:.2f}%"
-        return False, f"hold momentum {momentum_pct:.2f}%"
+
+        try:
+            ob = get_orderbook(self.stock_code)
+        except Exception as e:
+            # 호가 조회 실패는 안전 측 차단 (매수 보류)
+            return False, f"orderbook fetch failed: {e}"
+
+        ratio = ob["bid_ask_ratio"]
+        if ratio < min_ratio:
+            return False, (
+                f"weak orderbook (bid/ask={ratio:.2f} < {min_ratio:.2f}, "
+                f"momentum {momentum_pct:.2f}%)"
+            )
+
+        return True, (
+            f"breakout momentum {momentum_pct:.2f}% + bid/ask={ratio:.2f}"
+        )
 
     def _sell_signal(self, price):
         entry_price = int(self.state.get("entry_price", 0))

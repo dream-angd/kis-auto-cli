@@ -1,6 +1,7 @@
 import signal
 import threading
 import time
+import unicodedata
 from datetime import datetime
 
 from src import config
@@ -25,22 +26,34 @@ def _log_waiting_for_market():
 
 
 def _build_monitors(scalp_codes):
-    """입력 종목 리스트로 ScalpMonitor 인스턴스를 만든다."""
+    """입력 종목 리스트로 ScalpMonitor 인스턴스를 만든다.
+
+    종목 수가 MAX_SCALP_STOCKS를 초과하면 ValueError.
+    종목명 입력 시 자동으로 코드로 변환된다 (config.resolve_stock_code).
+    """
     if isinstance(scalp_codes, str):
         scalp_codes = [c.strip() for c in scalp_codes.split(",") if c.strip()]
-    if not scalp_codes:
+    if scalp_codes:
+        # CLI 인자 등으로 들어온 값도 이름→코드 resolve
+        scalp_codes = [config.resolve_stock_code(c) for c in scalp_codes if c]
+    else:
         scalp_codes = config.get_scalp_stocks()
     if not scalp_codes:
         raise ValueError("스캘프 대상 종목이 없습니다. SCALP_STOCKS / SCALP_STOCK / TARGET_STOCKS 중 하나 설정 필요.")
 
     seen = []
-    monitors = []
     for code in scalp_codes:
-        if code in seen:
-            continue
-        seen.append(code)
-        monitors.append(ScalpMonitor(code))
-    return monitors
+        if code not in seen:
+            seen.append(code)
+
+    limit = config.get_max_scalp_stocks()
+    if len(seen) > limit:
+        raise ValueError(
+            f"스캘프 종목 수가 한도 초과: {len(seen)}개 (한도: {limit}개). "
+            f".env의 MAX_SCALP_STOCKS 또는 SCALP_STOCKS를 조정하세요."
+        )
+
+    return [ScalpMonitor(code) for code in seen]
 
 
 def _start_scalp_threads(monitors, interval_sec, stop_event):
@@ -64,15 +77,49 @@ def _stop_scalp_threads(threads, stop_event, timeout=5):
         t.join(timeout=timeout)
 
 
+def _disp_width(s: str) -> int:
+    """동아시아 wide 문자(한글 등)는 2칸, 그 외는 1칸으로 계산."""
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s)
+
+
+def _pad_right(s: str, width: int) -> str:
+    """display 폭 기준 우측 패딩 (한글 정렬용)."""
+    return s + " " * max(0, width - _disp_width(s))
+
+
 def _format_heartbeat(monitors) -> str:
-    parts = []
+    """여러 줄로 종목별 가격/상태/손익 표시.
+
+    포맷:
+      [scalp 상태] (보유 N / 대기 M)
+        삼성전자(005930)        227,500   대기
+        현대차(005380)          540,000   보유 +0.32%
+    """
+    if not monitors:
+        return "[scalp 상태] (모니터 없음)"
+
+    held = sum(1 for m in monitors if m._has_position())
+    waiting = len(monitors) - held
+    lines = [f"[scalp 상태] (보유 {held} / 대기 {waiting})"]
+
+    name_w = max(_disp_width(m.display) for m in monitors)
     for m in monitors:
-        if m.last_price > 0:
-            tag = "보유" if m._has_position() else "대기"
-            parts.append(f"{m.display}={m.last_price:,}({tag})")
+        disp = _pad_right(m.display, name_w)
+        if m.last_price <= 0:
+            lines.append(f"  {disp}    조회중")
+            continue
+
+        price_str = f"{m.last_price:>10,}"
+        if m._has_position():
+            entry = int(m.state.get("entry_price", 0))
+            if entry > 0:
+                pnl_pct = ((m.last_price - entry) / entry) * 100
+                lines.append(f"  {disp}  {price_str}   보유 {pnl_pct:+.2f}%")
+            else:
+                lines.append(f"  {disp}  {price_str}   보유")
         else:
-            parts.append(f"{m.display}=조회중")
-    return "[scalp 상태] " + "  ".join(parts)
+            lines.append(f"  {disp}  {price_str}   대기")
+    return "\n".join(lines)
 
 
 def run_all_loop(swing_interval_sec=300, scalp_stock=None, scalp_interval_sec=None):
