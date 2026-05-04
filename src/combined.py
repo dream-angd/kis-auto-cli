@@ -1,3 +1,5 @@
+import csv
+import json
 import signal
 import threading
 import time
@@ -5,7 +7,7 @@ import unicodedata
 from datetime import datetime
 
 from src import config
-from src.logger import log_info
+from src.logger import log_error, log_info
 from src.scalper import ScalpMonitor
 from src.scheduler import is_market_open, load_state, run_swing_cycle
 
@@ -77,6 +79,108 @@ def _stop_scalp_threads(threads, stop_event, timeout=5):
         t.join(timeout=timeout)
 
 
+def print_daily_summary() -> None:
+    """장 마감 / 종료 시 오늘의 거래 요약을 콘솔에 출력.
+
+    - 매수/매도 횟수, 승/패, 총 실현손익 (수수료/세금 포함)
+    - 시작 잔고 vs 현재 잔고 비교
+    - 미청산 보유 종목
+    """
+    today = datetime.now().strftime("%Y%m%d")
+    csv_path = config.get_logs_dir() / f"trades_{today}.csv"
+
+    log_info("")
+    log_info("==================== 오늘 거래 요약 ====================")
+
+    # 거래 집계
+    if csv_path.exists():
+        try:
+            with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
+                rows = list(csv.DictReader(f))
+            buy_count = 0
+            sell_count = 0
+            wins = 0
+            losses = 0
+            total_pnl = 0.0
+            buy_amount_total = 0
+            sell_amount_total = 0
+            for r in rows:
+                action = r.get("action", "") or ""
+                amount = int(r.get("amount") or 0)
+                pnl_str = r.get("pnl", "") or ""
+                if "BUY" in action:
+                    buy_count += 1
+                    buy_amount_total += amount
+                elif "SELL" in action:
+                    sell_count += 1
+                    sell_amount_total += amount
+                    if pnl_str.strip():
+                        try:
+                            pnl = float(pnl_str)
+                            total_pnl += pnl
+                            if pnl > 0:
+                                wins += 1
+                            elif pnl < 0:
+                                losses += 1
+                        except ValueError:
+                            pass
+
+            log_info(f"  거래: 총 {buy_count + sell_count}건  (매수 {buy_count} / 매도 {sell_count})")
+            if sell_count > 0:
+                breakeven = sell_count - wins - losses
+                win_rate = wins / sell_count * 100
+                log_info(
+                    f"  성적: {wins}승 {losses}패"
+                    + (f" {breakeven}본전" if breakeven > 0 else "")
+                    + f"  (승률 {win_rate:.1f}%)"
+                )
+            log_info(f"  매수 총 거래대금: {buy_amount_total:,}원")
+            log_info(f"  매도 총 거래대금: {sell_amount_total:,}원")
+            log_info(f"  실현 손익: {total_pnl:+,.0f}원  (수수료·거래세 차감 후)")
+        except Exception as e:
+            log_error(f"  거래 집계 실패: {e}")
+    else:
+        log_info("  오늘 거래 없음")
+
+    log_info("")
+
+    # 잔고 비교 (시작 스냅샷 vs 현재)
+    try:
+        from src.trader import get_account_info
+        balance, holdings = get_account_info()
+        log_info(
+            f"  현재 평가액: {balance['total_eval']:,}원  "
+            f"(Cash {balance['cash']:,}원)"
+        )
+        snap_path = config.get_logs_dir() / f"start_snapshot_{today}.json"
+        if snap_path.exists():
+            try:
+                snap = json.loads(snap_path.read_text(encoding="utf-8"))
+                start_eval = int(snap.get("balance", {}).get("total_eval", 0))
+                if start_eval > 0:
+                    diff = balance["total_eval"] - start_eval
+                    pct = diff / start_eval * 100
+                    log_info(f"  시작 대비: {diff:+,}원  ({pct:+.2f}%)")
+            except Exception:
+                pass
+        if holdings:
+            log_info(f"  미청산 보유: {len(holdings)}종목")
+            for h in holdings:
+                name = config.get_stock_name(h["stock_code"])
+                log_info(
+                    f"    - {name}({h['stock_code']}) "
+                    f"{h['quantity']}주  pnl {h['profit_rate']:+.2f}% "
+                    f"({h['profit_loss']:+,}원)"
+                )
+        else:
+            log_info("  미청산 보유: 없음 ✓")
+    except Exception as e:
+        log_error(f"  잔고 조회 실패: {e}")
+
+    log_info("==========================================================")
+    log_info("")
+
+
 def _disp_width(s: str) -> int:
     """동아시아 wide 문자(한글 등)는 2칸, 그 외는 1칸으로 계산."""
     return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s)
@@ -85,6 +189,17 @@ def _disp_width(s: str) -> int:
 def _pad_right(s: str, width: int) -> str:
     """display 폭 기준 우측 패딩 (한글 정렬용)."""
     return s + " " * max(0, width - _disp_width(s))
+
+
+def _is_post_close_done(monitors) -> bool:
+    """장 마감 강제 청산 시점 + 모든 scalp 보유 0이면 True (조기 종료 신호)."""
+    force_close_min = config.get_scalp_force_close_before_close_min()
+    if force_close_min <= 0:
+        return False
+    close_in = ScalpMonitor._market_close_in_min()
+    if not (0 < close_in <= force_close_min):
+        return False
+    return all(not m._has_position() for m in monitors)
 
 
 def _format_swing_block(swing_codes: list, interval_sec: int) -> str:
@@ -248,6 +363,11 @@ def run_all_loop(swing_interval_sec=300, scalp_stock=None, scalp_interval_sec=No
                     break
                 next_swing_at = now + swing_interval_sec
 
+            # 마감 강제 청산 + 모든 보유 0 → 조기 종료
+            if _is_post_close_done(monitors):
+                log_info("마감 임박 + 모든 보유 청산 완료 — 자동매매 조기 종료")
+                break
+
             if now >= next_heartbeat_at:
                 scalp_codes = {m.stock_code for m in monitors}
                 bal, swing_held = _fetch_balance_and_swing_holdings(scalp_codes)
@@ -259,6 +379,7 @@ def run_all_loop(swing_interval_sec=300, scalp_stock=None, scalp_interval_sec=No
         if market_threads_active:
             _stop_scalp_threads(scalp_threads, stop_event)
         signal.signal(signal.SIGINT, prev_handler)
+        print_daily_summary()
 
     log_info("=== Combined strategy stopped ===")
 
@@ -303,6 +424,11 @@ def run_scalp_loop(scalp_stock=None, scalp_interval_sec=None):
                 market_threads_active = True
                 next_heartbeat_at = time.time() + config.get_heartbeat_interval_sec()
 
+            # 마감 강제 청산 + 모든 보유 0 → 조기 종료
+            if _is_post_close_done(monitors):
+                log_info("마감 임박 + 모든 보유 청산 완료 — 자동매매 조기 종료")
+                break
+
             now = time.time()
             if now >= next_heartbeat_at:
                 scalp_codes = {m.stock_code for m in monitors}
@@ -315,5 +441,6 @@ def run_scalp_loop(scalp_stock=None, scalp_interval_sec=None):
         if market_threads_active:
             _stop_scalp_threads(scalp_threads, stop_event)
         signal.signal(signal.SIGINT, prev_handler)
+        print_daily_summary()
 
     log_info("=== Scalp strategy stopped ===")
