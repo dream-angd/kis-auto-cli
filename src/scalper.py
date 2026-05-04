@@ -173,8 +173,15 @@ class ScalpMonitor:
             return True, f"take profit {pnl_pct:.2f}%"
         if pnl_pct > 0 and drop_pct >= config.get_scalp_trailing_drop_pct():
             return True, f"trailing drop {drop_pct:.2f}%"
-        if age_sec >= config.get_scalp_max_hold_sec() and pnl_pct <= 0:
-            return True, f"timeout {int(age_sec)}s pnl {pnl_pct:.2f}%"
+        # 타임아웃은 '실수익 기준'으로 판정. 수수료+거래세 차감 후 0 이하면 청산.
+        # (명목 0%만 잘라내던 기존 방식은 +0.1% 같은 미세 양전에서 갇히는 문제가 있었음)
+        total_cost_pct = (
+            config.get_buy_fee_rate()
+            + config.get_sell_fee_rate()
+            + config.get_sell_tax_rate()
+        ) * 100
+        if age_sec >= config.get_scalp_max_hold_sec() and pnl_pct <= total_cost_pct:
+            return True, f"timeout {int(age_sec)}s pnl {pnl_pct:.2f}% (실수익 0 이하)"
         return False, f"holding pnl {pnl_pct:.2f}%"
 
     def _enter_position(self, price, reason):
