@@ -13,6 +13,63 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DOMAIN_REAL = "https://openapi.koreainvestment.com:9443"
 DOMAIN_MOCK = "https://openapivts.koreainvestment.com:29443"
 
+# 자주 쓰는 종목명 — 사용자는 .env의 STOCK_NAMES로 추가/덮어쓰기 가능
+_BUILTIN_STOCK_NAMES = {
+    "005930": "삼성전자",
+    "000660": "SK하이닉스",
+    "005380": "현대차",
+    "035420": "NAVER",
+    "035720": "카카오",
+    "028260": "삼성물산",
+    "005490": "POSCO",
+    "051910": "LG화학",
+    "068270": "셀트리온",
+    "207940": "삼성바이오",
+    "247540": "에코프로비엠",
+    "035900": "JYP Ent.",
+    "105560": "KB금융",
+    "055550": "신한지주",
+    "086790": "하나금융",
+    "010140": "삼성중공업",
+    "042660": "한화오션",
+    "047810": "한국항공우주",
+    "003670": "포스코홀딩스",
+    "012450": "한화에어로스페이스",
+}
+
+
+def _parse_stock_names_env() -> dict[str, str]:
+    """STOCK_NAMES=005930:삼성전자,000660:하이닉스 형식 파싱."""
+    raw = os.getenv("STOCK_NAMES", "").strip()
+    if not raw:
+        return {}
+    out = {}
+    for pair in raw.split(","):
+        if ":" in pair:
+            code, name = pair.split(":", 1)
+            code, name = code.strip(), name.strip()
+            if code:
+                out[code] = name
+    return out
+
+
+def get_stock_name(stock_code: str) -> str:
+    """종목명 조회. STOCK_NAMES env > 내장 사전 > 종목코드 그대로."""
+    if not stock_code:
+        return ""
+    overrides = _parse_stock_names_env()
+    if stock_code in overrides:
+        return overrides[stock_code]
+    return _BUILTIN_STOCK_NAMES.get(stock_code, stock_code)
+
+
+def format_stock(stock_code: str) -> str:
+    """로그용 표기. '삼성전자(005930)' 형식. 이름 없으면 코드만."""
+    name = get_stock_name(stock_code)
+    if name and name != stock_code:
+        return f"{name}({stock_code})"
+    return stock_code
+
 
 # --- 모드 / 도메인 ---
 def get_mode() -> str:
@@ -66,12 +123,30 @@ def get_status_path() -> Path:
 
 # --- 트레이딩 파라미터 ---
 def get_target_stocks() -> list[str]:
+    """[Deprecated] swing/scalp 분리 이전 전체 감시 종목. get_swing_stocks() 권장."""
     raw = os.getenv("TARGET_STOCKS", "")
     return [c.strip() for c in raw.split(",") if c.strip()]
 
 
+def get_swing_stocks() -> list[str]:
+    """Swing 전략 대상 종목. SWING_STOCKS 우선, 없으면 TARGET_STOCKS fallback."""
+    raw = os.getenv("SWING_STOCKS", "").strip()
+    if raw:
+        return [c.strip() for c in raw.split(",") if c.strip()]
+    return get_target_stocks()
+
+
 def get_max_buy_amount() -> int:
+    """[Deprecated] swing 1회 매수 한도. get_swing_max_buy_amount() 권장."""
     return int(os.getenv("MAX_BUY_AMOUNT", "500000"))
+
+
+def get_swing_max_buy_amount() -> int:
+    """Swing 1회 매수 한도. SWING_MAX_BUY_AMOUNT 우선, 없으면 MAX_BUY_AMOUNT fallback."""
+    raw = os.getenv("SWING_MAX_BUY_AMOUNT", "").strip()
+    if raw:
+        return int(raw)
+    return get_max_buy_amount()
 
 
 def get_max_daily_loss() -> float:
@@ -82,13 +157,36 @@ def get_max_consecutive_losses() -> int:
     return int(os.getenv("MAX_CONSECUTIVE_LOSSES", "3"))
 
 
+def get_heartbeat_interval_sec() -> int:
+    """[scalp 상태] heartbeat 주기. 최소 5초."""
+    return max(5, int(os.getenv("HEARTBEAT_INTERVAL_SEC", "30")))
+
+
 # --- 분석 파라미터 ---
 def get_stop_loss_pct() -> float:
+    """[Deprecated] swing 손절. get_swing_stop_loss_pct() 권장."""
     return float(os.getenv("STOP_LOSS_PCT", "-3.0"))
 
 
 def get_take_profit_pct() -> float:
+    """[Deprecated] swing 익절. get_swing_take_profit_pct() 권장."""
     return float(os.getenv("TAKE_PROFIT_PCT", "5.0"))
+
+
+def get_swing_stop_loss_pct() -> float:
+    """Swing 손절 %. SWING_STOP_LOSS_PCT 우선, 없으면 STOP_LOSS_PCT fallback."""
+    raw = os.getenv("SWING_STOP_LOSS_PCT", "").strip()
+    if raw:
+        return float(raw)
+    return get_stop_loss_pct()
+
+
+def get_swing_take_profit_pct() -> float:
+    """Swing 익절 %. SWING_TAKE_PROFIT_PCT 우선, 없으면 TAKE_PROFIT_PCT fallback."""
+    raw = os.getenv("SWING_TAKE_PROFIT_PCT", "").strip()
+    if raw:
+        return float(raw)
+    return get_take_profit_pct()
 
 
 # --- ATR 기반 포지션 사이징 ---
@@ -144,11 +242,23 @@ def _get_bool(name: str, default: bool) -> bool:
 
 
 def get_scalp_stock() -> str:
+    """단일 종목 (하위 호환). SCALP_STOCK 또는 SCALP_STOCKS 첫 번째 또는 TARGET_STOCKS 첫 번째."""
     raw = os.getenv("SCALP_STOCK", "").strip()
     if raw:
         return raw
-    targets = get_target_stocks()
-    return targets[0] if targets else ""
+    multi = get_scalp_stocks()
+    return multi[0] if multi else ""
+
+
+def get_scalp_stocks() -> list[str]:
+    """다종목 스캘핑 대상. SCALP_STOCKS=A,B,C 또는 SCALP_STOCK 단일 또는 TARGET_STOCKS fallback."""
+    raw = os.getenv("SCALP_STOCKS", "").strip()
+    if raw:
+        return [c.strip() for c in raw.split(",") if c.strip()]
+    one = os.getenv("SCALP_STOCK", "").strip()
+    if one:
+        return [one]
+    return []
 
 
 def get_scalp_interval_sec() -> float:
@@ -188,5 +298,9 @@ def is_scalp_trade_enabled() -> bool:
     return _get_bool("SCALP_TRADE_ENABLED", get_mode() == "mock")
 
 
-def get_scalp_state_path() -> Path:
-    return get_data_dir() / "scalp_state.json"
+def get_scalp_state_path(stock_code: str = "") -> Path:
+    """종목별 state 파일 경로. 인자 없으면 첫 번째 scalp 종목 사용 (하위 호환)."""
+    if not stock_code:
+        stocks = get_scalp_stocks()
+        stock_code = stocks[0] if stocks else "default"
+    return get_data_dir() / f"scalp_state_{stock_code}.json"

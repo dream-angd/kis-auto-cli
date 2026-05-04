@@ -18,18 +18,26 @@ def _rate_limit():
         _last_call_time = time.time()
 
 
+_RETRY_STATUS = {429, 500, 502, 503, 504}
+_RETRY_BACKOFFS = (0.3, 0.5, 0.8, 1.2, 2.0)  # 5회 재시도, 누적 4.8초
+
+
 def _api_get(path, params, tr_id):
     _rate_limit()
     url = f"{get_base_url()}{path}"
     headers = get_headers(tr_id)
-    for attempt in range(3):
+    last_status = None
+    attempts = len(_RETRY_BACKOFFS)
+    for attempt in range(attempts):
         resp = requests.get(url, headers=headers, params=params, timeout=10)
-        if resp.status_code == 429:
-            time.sleep(1 * (attempt + 1))
+        if resp.status_code in _RETRY_STATUS:
+            last_status = resp.status_code
+            if attempt < attempts - 1:
+                time.sleep(_RETRY_BACKOFFS[attempt])
             continue
         resp.raise_for_status()
         return resp.json()
-    raise RuntimeError("API 호출 실패: 429 Too Many Requests 반복")
+    raise RuntimeError(f"API 호출 실패 (HTTP {last_status} 반복)")
 
 
 def get_current_price(stock_code):

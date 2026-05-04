@@ -15,10 +15,39 @@ class ScalpMonitor:
         if not self.stock_code:
             raise ValueError("SCALP_STOCK or TARGET_STOCKS must contain at least one stock code.")
 
+        self.display = config.format_stock(self.stock_code)  # 로그 표기용
         self.prices = deque(maxlen=config.get_scalp_window_size())
         self.state = self._load_state()
         # reconcile 결과를 파일에 즉시 반영(desync 발견 시 다음 실행에서 재발 방지)
         self._save_state()
+        self.next_run_at = 0.0  # 종목별 다음 실행 시각 (epoch)
+        self.last_price = 0     # heartbeat 표시용 최근 조회가
+
+    def maybe_run(self, interval_sec: float) -> bool:
+        """interval_sec이 경과했으면 run_once 실행. 실행했으면 True."""
+        now = time.time()
+        if now < self.next_run_at:
+            return False
+        self.run_once()
+        self.next_run_at = time.time() + interval_sec
+        return True
+
+    def run_loop(self, interval_sec: float, stop_event) -> None:
+        """종목 단독 thread에서 영구 루프. stop_event로 종료 가능.
+
+        한 종목의 느림이 다른 종목에 영향을 주지 않게 한다.
+        run_once 예외는 흡수해 다음 사이클 진행.
+        """
+        while not stop_event.is_set():
+            t0 = time.time()
+            try:
+                self.run_once()
+            except Exception as e:
+                log_error(f"SCALP {self.display} run_once error: {e}")
+            elapsed = time.time() - t0
+            wait = max(0.0, interval_sec - elapsed)
+            if stop_event.wait(wait):
+                break
 
     def _empty_state(self):
         return {
@@ -32,7 +61,7 @@ class ScalpMonitor:
         }
 
     def _load_state(self):
-        path = config.get_scalp_state_path()
+        path = config.get_scalp_state_path(self.stock_code)
         if not path.exists():
             return self._reconcile_with_holdings(self._empty_state())
         try:
@@ -60,7 +89,7 @@ class ScalpMonitor:
                 None,
             )
         except Exception as e:
-            log_error(f"SCALP {self.stock_code} state reconcile skipped (잔고조회 실패): {e}")
+            log_error(f"SCALP {self.display} state reconcile skipped (잔고조회 실패): {e}")
             return state
 
         actual_qty = int(held["quantity"]) if held else 0
@@ -71,14 +100,14 @@ class ScalpMonitor:
 
         if actual_qty == 0 and local_qty > 0:
             log_info(
-                f"SCALP {self.stock_code} state desync: local={local_qty}주, "
+                f"SCALP {self.display} state desync: local={local_qty}주, "
                 f"actual=0 → 포지션 초기화"
             )
             return self._empty_state()
 
         if actual_qty < local_qty:
             log_info(
-                f"SCALP {self.stock_code} state desync: local={local_qty}주, "
+                f"SCALP {self.display} state desync: local={local_qty}주, "
                 f"actual={actual_qty}주 → position_qty 동기화"
             )
             state["position_qty"] = actual_qty
@@ -87,7 +116,7 @@ class ScalpMonitor:
         # actual_qty > local_qty: 외부 매수로 보유가 더 많음.
         # 진입 정보(entry_price/time)를 모르므로 수량만 맞추고 entry는 평균가 사용.
         log_info(
-            f"SCALP {self.stock_code} state desync: local={local_qty}주, "
+            f"SCALP {self.display} state desync: local={local_qty}주, "
             f"actual={actual_qty}주 → 외부 매수 감지, 평균가로 entry 추정"
         )
         state["position_qty"] = actual_qty
@@ -99,7 +128,7 @@ class ScalpMonitor:
         return state
 
     def _save_state(self):
-        path = config.get_scalp_state_path()
+        path = config.get_scalp_state_path(self.stock_code)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -152,7 +181,7 @@ class ScalpMonitor:
         amount = config.get_scalp_max_buy_amount()
         requested_qty = amount // price
         if requested_qty <= 0:
-            log_info(f"SCALP {self.stock_code} buy skipped: amount {amount:,} < price {price:,}")
+            log_info(f"SCALP {self.display} buy skipped: amount {amount:,} < price {price:,}")
             return
 
         if config.is_scalp_trade_enabled():
@@ -161,14 +190,14 @@ class ScalpMonitor:
             fill_price = int(order.get("avg_fill_price", 0))
             if filled_qty <= 0 or fill_price <= 0:
                 log_error(
-                    f"SCALP {self.stock_code} buy unfilled: ord={order.get('ord_qty')}, "
+                    f"SCALP {self.display} buy unfilled: ord={order.get('ord_qty')}, "
                     f"filled={filled_qty}, odno={order.get('odno')}"
                 )
                 return
             action = "SCALP_BUY" if order.get("fully_filled") else "SCALP_BUY_PARTIAL"
             log_reason = self._annotate_reason(reason, order, requested_qty)
         else:
-            log_info(f"SCALP {self.stock_code} paper buy signal only: {reason}")
+            log_info(f"SCALP {self.display} paper buy signal only: {reason}")
             filled_qty = requested_qty
             fill_price = price
             action = "SCALP_BUY"
@@ -199,14 +228,14 @@ class ScalpMonitor:
             fill_price = int(order.get("avg_fill_price", 0))
             if filled_qty <= 0 or fill_price <= 0:
                 log_error(
-                    f"SCALP {self.stock_code} sell unfilled: ord={order.get('ord_qty')}, "
+                    f"SCALP {self.display} sell unfilled: ord={order.get('ord_qty')}, "
                     f"filled={filled_qty}, odno={order.get('odno')}"
                 )
                 return
             action = "SCALP_SELL" if order.get("fully_filled") else "SCALP_SELL_PARTIAL"
             log_reason = self._annotate_reason(reason, order, held_qty)
         else:
-            log_info(f"SCALP {self.stock_code} paper sell signal only: {reason}")
+            log_info(f"SCALP {self.display} paper sell signal only: {reason}")
             filled_qty = held_qty
             fill_price = price
             action = "SCALP_SELL"
@@ -251,26 +280,31 @@ class ScalpMonitor:
     def run_once(self):
         try:
             price = get_current_price(self.stock_code)["price"]
-        except Exception as e:
-            log_error(f"SCALP {self.stock_code} price fetch failed: {e}")
+        except Exception:
+            # KIS 모의 500 에러 등은 흔하므로 침묵 (retry는 fetcher가 처리).
+            # 5회 연속 실패시에만 한 번 알림.
+            self._fetch_fail_count = getattr(self, "_fetch_fail_count", 0) + 1
+            if self._fetch_fail_count == 5:
+                log_info(f"SCALP {self.display} 가격 조회 5회 연속 실패 (KIS 모의 일시 부하)")
             return
+        self._fetch_fail_count = 0
 
         if price <= 0:
-            log_error(f"SCALP {self.stock_code} invalid price: {price}")
             return
 
+        self.last_price = price
         self.prices.append(price)
 
         try:
             if self._has_position():
                 should_sell, reason = self._sell_signal(price)
-                log_info(f"SCALP {self.stock_code} price={price:,} position=on {reason}")
                 if should_sell:
+                    log_info(f"SCALP {self.display} 매도 신호: {reason} @ {price:,}")
                     self._exit_position(price, reason)
             else:
                 should_buy, reason = self._buy_signal(price)
-                log_info(f"SCALP {self.stock_code} price={price:,} position=off {reason}")
                 if should_buy:
+                    log_info(f"SCALP {self.display} 매수 신호: {reason} @ {price:,}")
                     self._enter_position(price, reason)
         except Exception as e:
-            log_error(f"SCALP {self.stock_code} cycle failed: {e}")
+            log_error(f"SCALP {self.display} cycle failed: {e}")

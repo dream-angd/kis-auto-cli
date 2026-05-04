@@ -420,7 +420,7 @@ def generate_daily_report(
 
     예외 발생 시 호출자에게 전파한다 (호출자가 log_error로 처리).
     """
-    from src.config import get_target_stocks, get_mode
+    from src.config import get_swing_stocks, get_scalp_stocks, get_mode
 
     logs_dir = get_logs_dir()
     generated: list[Path] = []
@@ -445,7 +445,12 @@ def generate_daily_report(
         # ISO 포맷(2026-05-02T09:08:55)을 공백 구분으로 변환
         started_at = raw_ts.replace("T", " ")
 
-    target_stocks = get_target_stocks()
+    # swing + scalp 종목 합집합 (감시 대상 전체)
+    seen = []
+    for code in [*get_swing_stocks(), *get_scalp_stocks()]:
+        if code and code not in seen:
+            seen.append(code)
+    target_stocks = seen
     mode = get_mode()
 
     # --- summary ---

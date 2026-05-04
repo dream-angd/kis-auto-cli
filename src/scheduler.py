@@ -87,14 +87,14 @@ def _check_holdings(holdings, state, excluded_codes=None):
         try:
             order = sell(h["stock_code"], h["quantity"], current_price=result["current_price"])
         except Exception as e:
-            log_error(f"Swing sell failed [{h['stock_code']}]: {e}")
+            log_error(f"Swing sell failed [{config.format_stock(h['stock_code'])}]: {e}")
             continue
 
         filled_qty = int(order.get("filled_qty", 0))
         fill_price = int(order.get("avg_fill_price", 0))
         if filled_qty <= 0 or fill_price <= 0:
             log_error(
-                f"Swing sell unfilled [{h['stock_code']}]: ord={order.get('ord_qty')}, "
+                f"Swing sell unfilled [{config.format_stock(h['stock_code'])}]: ord={order.get('ord_qty')}, "
                 f"filled={filled_qty}, odno={order.get('odno')}"
             )
             continue
@@ -121,8 +121,8 @@ def _check_holdings(holdings, state, excluded_codes=None):
 
 def _check_targets(holdings, balance, state, excluded_codes=None):
     excluded_codes = excluded_codes or set()
-    target_stocks = config.get_target_stocks()
-    max_buy = config.get_max_buy_amount()
+    target_stocks = config.get_swing_stocks()
+    max_buy = config.get_swing_max_buy_amount()
     available_cash = balance["cash"]
 
     holdings_codes = {h["stock_code"] for h in holdings}
@@ -151,14 +151,14 @@ def _check_targets(holdings, balance, state, excluded_codes=None):
         try:
             order = buy(code, amount, result["current_price"])
         except Exception as e:
-            log_error(f"Swing buy failed [{code}]: {e}")
+            log_error(f"Swing buy failed [{config.format_stock(code)}]: {e}")
             continue
 
         filled_qty = int(order.get("filled_qty", 0))
         fill_price = int(order.get("avg_fill_price", 0))
         if filled_qty <= 0 or fill_price <= 0:
             log_error(
-                f"Swing buy unfilled [{code}]: ord={order.get('ord_qty')}, "
+                f"Swing buy unfilled [{config.format_stock(code)}]: ord={order.get('ord_qty')}, "
                 f"filled={filled_qty}, odno={order.get('odno')}"
             )
             continue
@@ -315,10 +315,9 @@ def run_loop(interval_sec=300):
     _write_status()
     state = _load_state()
 
-    log_info(f"=== Swing strategy started (MODE: {config.get_mode()}) ===")
-    log_info(f"Targets: {','.join(config.get_target_stocks())}")
-    log_info(f"Max buy amount: {config.get_max_buy_amount()}")
-    log_info(f"Interval: {interval_sec}s")
+    swing_codes_text = ", ".join(config.format_stock(c) for c in config.get_swing_stocks()) or "(없음)"
+    log_info(f"=== Swing 시작 (MODE: {config.get_mode().upper()}) ===")
+    log_info(f"Swing  → {swing_codes_text}  ({interval_sec}s 일봉 분석/매매)")
 
     try:
         while running:

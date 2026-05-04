@@ -85,8 +85,8 @@ def calc_position_size(current_price: int, atr: float, max_buy: int) -> int:
 
 
 def _check_stop_loss_take_profit(current_price, avg_price):
-    stop_loss_pct = config.get_stop_loss_pct()
-    take_profit_pct = config.get_take_profit_pct()
+    stop_loss_pct = config.get_swing_stop_loss_pct()
+    take_profit_pct = config.get_swing_take_profit_pct()
 
     if avg_price <= 0:
         return "HOLD", ""
