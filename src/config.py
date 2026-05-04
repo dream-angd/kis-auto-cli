@@ -398,6 +398,21 @@ def get_scalp_bid_ask_ratio_min() -> float:
     return float(os.getenv("SCALP_BID_ASK_RATIO_MIN", "1.0"))
 
 
+def get_scalp_no_new_buy_before_close_min() -> int:
+    """장 마감 N분 전부터 scalp 신규 매수 차단. 기본 15분.
+    0 또는 음수면 비활성.
+    """
+    return max(0, int(os.getenv("SCALP_NO_NEW_BUY_BEFORE_CLOSE_MIN", "15")))
+
+
+def get_scalp_force_close_before_close_min() -> int:
+    """장 마감 N분 전부터 scalp 보유 강제 청산. 기본 12분.
+    KIS 정규 거래는 15:20에 끝나므로 12분 전(=15:18)이 안전 마진.
+    0 또는 음수면 비활성.
+    """
+    return max(0, int(os.getenv("SCALP_FORCE_CLOSE_BEFORE_CLOSE_MIN", "12")))
+
+
 def is_scalp_trade_enabled() -> bool:
     # Default to real orders only in mock mode. Real mode must opt in explicitly.
     return _get_bool("SCALP_TRADE_ENABLED", get_mode() == "mock")

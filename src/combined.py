@@ -116,6 +116,13 @@ def _format_scalp_block(monitors, interval_sec: float) -> str:
         lines.append(f"  호가 검증 bid/ask >= {ratio_min:.1f}")
     else:
         lines.append("  호가 검증 비활성")
+    no_buy = config.get_scalp_no_new_buy_before_close_min()
+    force_close = config.get_scalp_force_close_before_close_min()
+    if no_buy > 0 or force_close > 0:
+        lines.append(
+            f"  장 마감 처리: 마감 {no_buy}분 전 신규매수 차단 / "
+            f"마감 {force_close}분 전 보유 강제 청산"
+        )
     return "\n".join(lines)
 
 

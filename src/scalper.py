@@ -1,7 +1,7 @@
 import json
 import time
 from collections import deque
-from datetime import date
+from datetime import date, datetime
 
 from src import config
 from src.fetcher import get_current_price, get_orderbook
@@ -308,6 +308,13 @@ class ScalpMonitor:
             notes.append("체결조회 실패-추정")
         return " | ".join(notes)
 
+    @staticmethod
+    def _market_close_in_min() -> float:
+        """현재 시각에서 장 마감(15:30)까지 남은 분. 음수면 이미 마감 후."""
+        now = datetime.now()
+        close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        return (close - now).total_seconds() / 60
+
     def run_once(self):
         try:
             price = get_current_price(self.stock_code)["price"]
@@ -326,13 +333,38 @@ class ScalpMonitor:
         self.last_price = price
         self.prices.append(price)
 
+        # 장 마감 임박 처리
+        close_in = self._market_close_in_min()
+        force_close_min = config.get_scalp_force_close_before_close_min()
+        no_new_buy_min = config.get_scalp_no_new_buy_before_close_min()
+
         try:
             if self._has_position():
+                # 1) 강제 청산 시점 도달 → 신호 무관 즉시 매도
+                if force_close_min > 0 and 0 < close_in <= force_close_min:
+                    if not getattr(self, "_market_close_announced", False):
+                        log_info(
+                            f"SCALP {self.display} 장 마감 {close_in:.1f}분 전 — "
+                            f"보유 강제 청산 @ {price:,}"
+                        )
+                        self._market_close_announced = True
+                    self._exit_position(price, f"장 마감 {force_close_min}분 전 강제 청산")
+                    return
+                # 2) 평소 매도 신호
                 should_sell, reason = self._sell_signal(price)
                 if should_sell:
                     log_info(f"SCALP {self.display} 매도 신호: {reason} @ {price:,}")
                     self._exit_position(price, reason)
             else:
+                # 마감 임박 신규 매수 차단
+                if no_new_buy_min > 0 and 0 < close_in <= no_new_buy_min:
+                    if not getattr(self, "_no_new_buy_announced", False):
+                        log_info(
+                            f"SCALP {self.display} 장 마감 {close_in:.1f}분 전 — "
+                            f"신규 매수 차단 (마감 {no_new_buy_min}분 전부터)"
+                        )
+                        self._no_new_buy_announced = True
+                    return
                 should_buy, reason = self._buy_signal(price)
                 if should_buy:
                     log_info(f"SCALP {self.display} 매수 신호: {reason} @ {price:,}")
