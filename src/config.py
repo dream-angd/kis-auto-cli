@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+BASE_DIR = Path(__file__).resolve().parent.parent
 DOMAIN_REAL = "https://openapi.koreainvestment.com:9443"
 DOMAIN_MOCK = "https://openapivts.koreainvestment.com:29443"
 
@@ -42,15 +43,25 @@ def get_account_no() -> tuple[str, str]:
 
 
 # --- 토큰 캐시 ---
+def get_data_dir() -> Path:
+    raw = os.getenv("KIS_DATA_DIR", "").strip()
+    return Path(raw).expanduser() if raw else BASE_DIR / ".kis"
+
+
 def get_token_cache_path() -> Path:
     """토큰 캐시 파일 경로. 디렉토리는 호출 측에서 생성한다."""
-    return Path.home() / ".kis" / "token_cache.json"
+    return get_data_dir() / "token_cache.json"
 
 
 # --- 상태 파일 ---
 def get_state_path() -> Path:
     """일별 거래 상태 파일 경로."""
-    return Path.home() / ".kis" / "state.json"
+    return get_data_dir() / "state.json"
+
+
+def get_status_path() -> Path:
+    """프로세스 상태 파일 경로 (PID, 시작 시간 등)."""
+    return get_data_dir() / "status.json"
 
 
 # --- 트레이딩 파라미터 ---
@@ -80,6 +91,50 @@ def get_take_profit_pct() -> float:
     return float(os.getenv("TAKE_PROFIT_PCT", "5.0"))
 
 
+# --- ATR 기반 포지션 사이징 ---
+def get_atr_multiplier() -> float:
+    """ATR 기반 손절 거리 배수. 기본값 2.0 (2×ATR 손절 거리)."""
+    return float(os.getenv("ATR_MULTIPLIER", "2.0"))
+
+
+def get_atr_risk_pct() -> float:
+    """1회 매수 한도 대비 허용 손실 비율. 기본값 0.01 (1%)."""
+    return float(os.getenv("ATR_RISK_PCT", "0.01"))
+
+
+# --- 거래 비용 (수수료/거래세) ---
+def get_buy_fee_rate() -> float:
+    """매수 수수료율. 기본 0.015% (증권사별 협의 수수료에 맞춰 조정)."""
+    return float(os.getenv("BUY_FEE_RATE", "0.00015"))
+
+
+def get_sell_fee_rate() -> float:
+    """매도 수수료율. 기본 0.015%."""
+    return float(os.getenv("SELL_FEE_RATE", "0.00015"))
+
+
+def get_sell_tax_rate() -> float:
+    """매도 거래세율. 기본 0.18% (KOSPI/KOSDAQ 공통)."""
+    return float(os.getenv("SELL_TAX_RATE", "0.0018"))
+
+
+# --- 체결 조회 ---
+def get_fill_poll_attempts() -> int:
+    """주문 후 체결 조회 재시도 횟수. 기본 3회."""
+    return max(1, int(os.getenv("FILL_POLL_ATTEMPTS", "3")))
+
+
+def get_fill_poll_interval_sec() -> float:
+    """주문 후 체결 조회 간격(초). 기본 1.5초."""
+    return float(os.getenv("FILL_POLL_INTERVAL_SEC", "1.5"))
+
+
+# --- 로그 디렉토리 ---
+def get_logs_dir() -> Path:
+    """logs/ 디렉토리 절대 경로. logger.py의 LOGS_DIR과 동일 경로."""
+    return Path(__file__).resolve().parent.parent / "logs"
+
+
 # --- Scalp strategy ---
 def _get_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -97,7 +152,7 @@ def get_scalp_stock() -> str:
 
 
 def get_scalp_interval_sec() -> float:
-    return float(os.getenv("SCALP_INTERVAL_SEC", "5"))
+    return float(os.getenv("SCALP_INTERVAL_SEC", "2"))
 
 
 def get_scalp_max_buy_amount() -> int:
@@ -134,4 +189,4 @@ def is_scalp_trade_enabled() -> bool:
 
 
 def get_scalp_state_path() -> Path:
-    return Path.home() / ".kis" / "scalp_state.json"
+    return get_data_dir() / "scalp_state.json"

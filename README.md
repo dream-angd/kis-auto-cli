@@ -288,33 +288,33 @@ logs/
 
 ## ✅ 개선 할 일 목록
 
-코드 분석 기반(2026-04-17) 개선 항목. 우선순위 순.
+최신 코드 분석: 2026-05-04 (직전 점검(2026-04-17) 항목은 모두 코드에 반영 완료).
+우선순위 순.
 
 ### 🔴 Critical — 즉시 수정 필요
 
-- **[보안] `token_cache.json` 보안 이슈** — 평문 JSON으로 저장됨. `.gitignore` 추가 + 저장 경로를 `~/.kis/`로 이동 (`src/auth.py:46`)
-- **[안정성] `trader.py` rate limit 미적용** — 잔고조회/주문 API에 rate limit + retry 추가 필요 (`src/trader.py:31, 80`)
-- **[버그] `daily_loss` 실현손익 계산 오류** — `h["profit_loss"]`는 평가손익(미실현)이라 서킷브레이커 기준값이 틀림. 매도 체결 후 실현손익 별도 누적 필요 (`src/scheduler.py:35`)
+- **[검증] 백테스트 모듈 부재** — 전략(MA cross + RSI + BB)이 검증된 적 없는 파라미터. `MODE=real` 전환 전 1년치 일봉 기반 백테스트 필수
 
 ### 🟠 High — 기능 안정성
 
-- **[안정성] `daily_loss` 재시작 시 초기화** — 메모리에만 있어 재시작 시 손실 누적 초기화. 파일/DB 영속화 필요 (`src/scheduler.py:103`)
-- **[안정성] 주문 API retry/오류처리 없음** — 일시적 네트워크 오류 시 주문 누락. `_api_get` 패턴 적용 (`src/trader.py`)
-- **[구조] 환경변수 중앙 관리 없음** — `os.getenv()` 분산. `src/config.py` 단일 진입점으로 통합
+- **[안정성] 상태 파일 atomic write 아님** — `path.write_text` 도중 중단 시 `state.json` / `scalp_state.json` 손상 가능. tmp 작성 후 `os.replace` 패턴 권장 (`src/scheduler.py:33`, `src/scalper.py:52`)
+- **[전략] 일봉 데이터로 5분 간격 분석** — swing이 5분마다 돌지만 `get_daily_ohlcv`는 일봉. 같은 일봉으로 동일 신호 반복. 의도와 빈도 불일치 (`src/scheduler.py` × `src/analyzer.py:112`)
+- **[전략] scalp 모멘텀 휩쏘 위험** — 단순 "최근 3틱 상승 + 0.2%"로 매수. 호가/거래량/체결강도 미고려. 상승 끝물 진입 + 하락 초입 매도 패턴으로 수수료·세금 누적 손실 위험 (`src/scalper.py:57-73`)
+- **[안정성] 시그널 핸들러 `SIGINT`만 처리** — Windows console close, 작업 스케줄러 강제 종료 시 graceful shutdown 보장 안 됨. `SIGTERM`, Windows `SIGBREAK` 처리 추가 (`src/scheduler.py:260`, `src/combined.py:34`)
+- **[버그] 잔고 페이지네이션 미구현** — `output1`만 읽고 `CTX_AREA_NK100` 무시. 보유 종목 100개 초과 시 일부 누락 (`src/trader.py:91-119`)
 
 ### 🟡 Medium — 개선 권장
 
-- **[정확도] RSI 계산 방식 개선** — 단순 SMA → Wilder's SMMA 표준 공식 (`src/analyzer.py:10`)
-- **[기능] `analyze` 명령어 보유 종목 연동** — `avg_price=0` 고정 → 실제 평균단가 전달 (`main.py:66`)
-- **[기능] `history` 명령어 날짜 지정 옵션** — `--date 20260416` 추가 (`main.py:35`)
-- **[로깅] 로그 파일 전략 개선** — INFO 레벨 파일 저장, CSV 파일 잠금 처리 (`src/logger.py`)
+- **[정합성] ATR 사이징 vs `%` 손절 기준 불일치** — 포지션 크기는 `ATR×2` 손절 거리로 잡지만 청산은 `STOP_LOSS_PCT=-3%` 고정. 사이징 정신과 어긋남. 청산도 ATR 기반으로 통일 권장 (`src/analyzer.py:67-99`)
+- **[운영] 에러 후 silent continue + 알림 부재** — `log_error` 후 다음 사이클 진행. 같은 에러 반복 시 조용히 누락. 임계값 알림(텔레그램/이메일/슬랙) 부재 (`src/scheduler.py:236`)
+- **[로깅] 일별 CSV/raw 파일 정리 정책 없음** — `app.log`/`error.log`는 `TimedRotatingFileHandler`로 30일 회전되지만, `trades_YYYYMMDD.csv` / `raw_errors_*.log` / `raw_signals_*.log`는 무한 누적. 압축/삭제 정책 필요 (`src/logger.py`)
+- **[운영] `KR_HOLIDAYS` import 시 1회 평가** — 임시휴장(반장 등) 미반영. KIS 영업일 API 활용 권장 (`src/scheduler.py:14`)
 
 ### 🔵 Low — 장기 개선
 
-- **[테스트] 단위 테스트 코드 작성** — `unittest.mock` 기반 테스트 환경 구축
-- **[패키징] `pyproject.toml` 추가** — `pip install -e .`, `kis-trader` 커맨드 진입점 정의
-- **[모니터링] 프로세스 상태 확인 수단 없음** — PID 파일 또는 `status.json` 생성
-- **[전략] 포지션 사이징 개선** — 변동성(ATR) 기반 사이징 또는 비중 분산 (`src/trader.py:44`)
+- **[보안] `.env` 평문 저장** — Windows 자격증명 관리자 / OS keyring 활용 권장
+- **[테스트] 통합 테스트 커버리지 부족** — fetcher / trader / auth / scalper / combined의 mock API 응답 테스트 추가 필요 (`tests/`)
+- **[일관성] 다국어 혼용** — 로그·주석·메시지 한/영 섞임. 한 언어로 통일 (외부 공유 시 일관성)
 
 ---
 

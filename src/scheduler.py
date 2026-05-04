@@ -1,4 +1,5 @@
 import json
+import os
 import signal
 import time
 from datetime import date, datetime
@@ -6,7 +7,7 @@ from datetime import date, datetime
 import holidays
 
 from src import config
-from src.analyzer import analyze
+from src.analyzer import analyze, calc_position_size
 from src.logger import log_error, log_info, log_signal, log_trade
 from src.trader import buy, get_account_info, sell
 
@@ -51,6 +52,26 @@ def is_market_open():
     return market_start <= now <= market_end
 
 
+def _calc_realized_pnl(avg_price: float, fill_price: float, qty: int) -> float:
+    """매매 수수료 + 매도 거래세를 차감한 실현손익."""
+    if qty <= 0:
+        return 0.0
+    gross = (fill_price - avg_price) * qty
+    buy_fee = avg_price * qty * config.get_buy_fee_rate()
+    sell_fee = fill_price * qty * config.get_sell_fee_rate()
+    sell_tax = fill_price * qty * config.get_sell_tax_rate()
+    return gross - buy_fee - sell_fee - sell_tax
+
+
+def _annotate_reason(base_reason: str, order: dict, requested_qty: int) -> str:
+    notes = [base_reason]
+    if not order.get("fully_filled", True):
+        notes.append(f"체결 {order['filled_qty']}/{requested_qty}")
+    if order.get("estimated"):
+        notes.append("체결조회 실패-추정")
+    return " | ".join(notes)
+
+
 def _check_holdings(holdings, state, excluded_codes=None):
     excluded_codes = excluded_codes or set()
     for h in holdings:
@@ -60,26 +81,42 @@ def _check_holdings(holdings, state, excluded_codes=None):
         result = analyze(h["stock_code"], avg_price=h["avg_price"])
         log_signal(h["stock_code"], result["signal"], result["current_price"], result["reason"])
 
-        if result["signal"] == "SELL":
-            try:
-                sell(h["stock_code"], h["quantity"])
-                pnl = (result["current_price"] - h["avg_price"]) * h["quantity"]
-                state["daily_loss"] += pnl
-                if pnl < 0:
-                    state["consecutive_losses"] += 1
-                else:
-                    state["consecutive_losses"] = 0
-                _save_state(state)
-                log_trade(
-                    h["stock_code"],
-                    "SELL",
-                    result["current_price"],
-                    h["quantity"],
-                    result["current_price"] * h["quantity"],
-                    result["reason"],
-                )
-            except Exception as e:
-                log_error(f"Swing sell failed [{h['stock_code']}]: {e}")
+        if result["signal"] != "SELL":
+            continue
+
+        try:
+            order = sell(h["stock_code"], h["quantity"], current_price=result["current_price"])
+        except Exception as e:
+            log_error(f"Swing sell failed [{h['stock_code']}]: {e}")
+            continue
+
+        filled_qty = int(order.get("filled_qty", 0))
+        fill_price = int(order.get("avg_fill_price", 0))
+        if filled_qty <= 0 or fill_price <= 0:
+            log_error(
+                f"Swing sell unfilled [{h['stock_code']}]: ord={order.get('ord_qty')}, "
+                f"filled={filled_qty}, odno={order.get('odno')}"
+            )
+            continue
+
+        pnl = _calc_realized_pnl(h["avg_price"], fill_price, filled_qty)
+        state["daily_loss"] += pnl
+        if pnl < 0:
+            state["consecutive_losses"] += 1
+        else:
+            state["consecutive_losses"] = 0
+        _save_state(state)
+
+        action = "SELL" if order.get("fully_filled") else "SELL_PARTIAL"
+        log_trade(
+            h["stock_code"],
+            action,
+            fill_price,
+            filled_qty,
+            int(fill_price * filled_qty),
+            _annotate_reason(result["reason"], order, h["quantity"]),
+            pnl=pnl,
+        )
 
 
 def _check_targets(holdings, balance, state, excluded_codes=None):
@@ -95,44 +132,149 @@ def _check_targets(holdings, balance, state, excluded_codes=None):
             continue
         if code in holdings_codes:
             continue
-        if available_cash < max_buy:
-            log_info(f"Swing buy skipped: cash {available_cash:,} < {max_buy:,}")
+        if available_cash <= 0:
             break
 
         result = analyze(code)
         log_signal(code, result["signal"], result["current_price"], result["reason"])
 
-        if result["signal"] == "BUY":
-            try:
-                order = buy(code, max_buy, result["current_price"])
-                qty = order.get("_qty", max_buy // result["current_price"])
-                available_cash -= qty * result["current_price"]
-                log_trade(
-                    code,
-                    "BUY",
-                    result["current_price"],
-                    qty,
-                    result["current_price"] * qty,
-                    result["reason"],
-                )
-            except Exception as e:
-                log_error(f"Swing buy failed [{code}]: {e}")
+        if result["signal"] != "BUY":
+            continue
+
+        atr = result.get("atr", 0.0)
+        qty = calc_position_size(result["current_price"], atr, max_buy)
+        amount = qty * result["current_price"]
+        if available_cash < amount:
+            log_info(f"매수 가능 현금 부족: {available_cash:,}원 < {amount:,}원 (ATR={atr:.0f})")
+            continue
+
+        try:
+            order = buy(code, amount, result["current_price"])
+        except Exception as e:
+            log_error(f"Swing buy failed [{code}]: {e}")
+            continue
+
+        filled_qty = int(order.get("filled_qty", 0))
+        fill_price = int(order.get("avg_fill_price", 0))
+        if filled_qty <= 0 or fill_price <= 0:
+            log_error(
+                f"Swing buy unfilled [{code}]: ord={order.get('ord_qty')}, "
+                f"filled={filled_qty}, odno={order.get('odno')}"
+            )
+            continue
+
+        actual_amount = int(fill_price * filled_qty)
+        buy_fee = int(actual_amount * config.get_buy_fee_rate())
+        available_cash -= actual_amount + buy_fee
+
+        action = "BUY" if order.get("fully_filled") else "BUY_PARTIAL"
+        log_trade(
+            code,
+            action,
+            fill_price,
+            filled_qty,
+            actual_amount,
+            _annotate_reason(result["reason"], order, qty),
+        )
 
 
 def _check_circuit_breaker(state):
     max_daily_loss = config.get_max_daily_loss()
     max_consecutive = config.get_max_consecutive_losses()
 
-    if abs(state["daily_loss"]) >= max_daily_loss:
+    # daily_loss는 누적 실현손익(부호 보존). 손실 한도 초과는 음수 방향에서만 판정.
+    if state["daily_loss"] <= -max_daily_loss:
         log_error(
             f"Circuit breaker: daily PnL {state['daily_loss']:,.0f}, "
-            f"limit {max_daily_loss:,.0f}"
+            f"limit -{max_daily_loss:,.0f}"
         )
         return True
     if state["consecutive_losses"] >= max_consecutive:
         log_error(f"Circuit breaker: consecutive losses {state['consecutive_losses']}")
         return True
     return False
+
+
+def _write_status() -> None:
+    path = config.get_status_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({
+            "pid": os.getpid(),
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "mode": config.get_mode(),
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _clear_status() -> None:
+    path = config.get_status_path()
+    if path.exists():
+        path.unlink()
+
+
+def _snapshot_holdings_at_open() -> None:
+    """장 시작 후 최초 보유 종목과 잔고를 start_snapshot_YYYYMMDD.json에 저장한다.
+
+    API 오류 시 log_error 후 무시한다 (스냅샷 실패가 트레이딩을 막으면 안 됨).
+    """
+    today = datetime.now().strftime("%Y%m%d")
+    snap_path = config.get_logs_dir() / f"start_snapshot_{today}.json"
+    if snap_path.exists():
+        return  # 이미 저장됨 (재시작 등 중복 방지)
+    try:
+        balance, holdings = get_account_info()
+        data = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "holdings": [
+                {
+                    "stock_code": h["stock_code"],
+                    "stock_name": h.get("stock_name", ""),
+                    "quantity": h["quantity"],
+                    "avg_price": h["avg_price"],
+                }
+                for h in holdings
+            ],
+            "balance": {
+                "total_eval": balance.get("total_eval", 0),
+                "cash": balance.get("cash", 0),
+                "profit_loss": balance.get("profit_loss", 0),
+            },
+        }
+        snap_path.parent.mkdir(parents=True, exist_ok=True)
+        snap_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        log_info(f"시작 스냅샷 저장: {snap_path}")
+    except Exception as e:
+        log_error(f"시작 스냅샷 저장 실패 (무시): {e}")
+
+
+def _maybe_generate_report() -> None:
+    """장 마감 이후(15:30) 종료된 경우에만 리포트를 생성한다.
+
+    15:30 이전 종료(조기 중단)이면 log_info 메시지만 남기고 반환한다.
+    generate_daily_report 예외는 log_error로 처리하고 전파하지 않는다.
+    """
+    now = datetime.now()
+    if now.hour < 15 or (now.hour == 15 and now.minute < 30):
+        log_info("장 마감 전 종료: 일별 리포트를 생성하지 않습니다.")
+        return
+    today = now.strftime("%Y%m%d")
+    balance: dict | None = None
+    holdings: list | None = None
+    try:
+        balance, holdings = get_account_info()
+    except Exception as e:
+        log_error(f"마감 잔고 조회 실패 (리포트에 balance 제외): {e}")
+    try:
+        from src.reporter import generate_daily_report
+        paths = generate_daily_report(today, balance_snapshot=balance, holdings_snapshot=holdings)
+        for p in paths:
+            log_info(f"리포트 생성 완료: {p}")
+    except Exception as e:
+        log_error(f"일별 리포트 생성 실패: {e}")
 
 
 def run_swing_cycle(state, excluded_codes=None):
@@ -170,6 +312,7 @@ def run_loop(interval_sec=300):
         running = False
 
     prev_handler = signal.signal(signal.SIGINT, signal_handler)
+    _write_status()
     state = _load_state()
 
     log_info(f"=== Swing strategy started (MODE: {config.get_mode()}) ===")
@@ -185,6 +328,8 @@ def run_loop(interval_sec=300):
                 time.sleep(60)
                 continue
 
+            _snapshot_holdings_at_open()
+
             if not run_swing_cycle(state):
                 break
 
@@ -193,6 +338,8 @@ def run_loop(interval_sec=300):
                     break
                 time.sleep(1)
     finally:
+        _clear_status()
+        _maybe_generate_report()
         signal.signal(signal.SIGINT, prev_handler)
 
     log_info("=== Swing strategy stopped ===")
