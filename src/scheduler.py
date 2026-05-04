@@ -362,5 +362,7 @@ def run_loop(interval_sec=300):
         _clear_status()
         _maybe_generate_report()
         signal.signal(signal.SIGINT, prev_handler)
+        from src.combined import print_daily_summary
+        print_daily_summary()
 
     log_info("=== Swing strategy stopped ===")
