@@ -87,13 +87,48 @@ def _pad_right(s: str, width: int) -> str:
     return s + " " * max(0, width - _disp_width(s))
 
 
-def _format_heartbeat(monitors) -> str:
-    """여러 줄로 종목별 가격/상태/손익 표시.
+def _format_swing_block(swing_codes: list, interval_sec: int) -> str:
+    """시작 로그 swing 블럭."""
+    lines = [f"[Swing] {interval_sec // 60}분 간격 일봉 분석 ({len(swing_codes)}종목)"]
+    for c in swing_codes:
+        lines.append(f"  - {config.format_stock(c)}")
+    lines.append(
+        f"  손절 {config.get_swing_stop_loss_pct():.1f}% / "
+        f"익절 +{config.get_swing_take_profit_pct():.1f}% / "
+        f"한도 {config.get_swing_max_buy_amount():,}원"
+    )
+    return "\n".join(lines)
+
+
+def _format_scalp_block(monitors, interval_sec: float) -> str:
+    """시작 로그 scalp 블럭."""
+    lines = [f"[Scalp] {interval_sec}초 간격 모멘텀 ({len(monitors)}종목, 독립 thread)"]
+    for m in monitors:
+        lines.append(f"  - {m.display}")
+    lines.append(
+        f"  손절 {config.get_scalp_stop_loss_pct():.1f}% / "
+        f"익절 +{config.get_scalp_take_profit_pct():.1f}% / "
+        f"추적 -{config.get_scalp_trailing_drop_pct():.1f}% / "
+        f"한도 {config.get_scalp_max_buy_amount():,}원"
+    )
+    ratio_min = config.get_scalp_bid_ask_ratio_min()
+    if ratio_min > 0:
+        lines.append(f"  호가 검증 bid/ask >= {ratio_min:.1f}")
+    else:
+        lines.append("  호가 검증 비활성")
+    return "\n".join(lines)
+
+
+def _format_heartbeat(monitors, balance=None, swing_holdings=None) -> str:
+    """scalp 종목별 가격/상태/손익 + (옵션) 잔고/swing 보유 한 줄 추가.
 
     포맷:
       [scalp 상태] (보유 N / 대기 M)
         삼성전자(005930)        227,500   대기
         현대차(005380)          540,000   보유 +0.32%
+
+        Cash 50,000,000원  Eval 49,940,000원  PnL -60,000원 (-0.12%)
+        Swing 보유: SK하이닉스(000660) 1주 +0.50%
     """
     if not monitors:
         return "[scalp 상태] (모니터 없음)"
@@ -119,7 +154,39 @@ def _format_heartbeat(monitors) -> str:
                 lines.append(f"  {disp}  {price_str}   보유")
         else:
             lines.append(f"  {disp}  {price_str}   대기")
+
+    # 잔고 + swing 보유 추가
+    if balance:
+        lines.append("")
+        lines.append(
+            f"  Cash {balance.get('cash', 0):,}원  "
+            f"Eval {balance.get('total_eval', 0):,}원  "
+            f"PnL {balance.get('profit_loss', 0):+,}원 "
+            f"({balance.get('profit_rate', 0):+.2f}%)"
+        )
+    if swing_holdings:
+        for h in swing_holdings:
+            name = config.format_stock(h["stock_code"])
+            lines.append(
+                f"  Swing 보유: {name} {h['quantity']}주 "
+                f"{h['profit_rate']:+.2f}% ({h['profit_loss']:+,}원)"
+            )
     return "\n".join(lines)
+
+
+def _fetch_balance_and_swing_holdings(scalp_codes: set):
+    """heartbeat용 잔고 + swing 보유 조회. 실패 시 (None, None) 반환."""
+    try:
+        from src.trader import get_account_info
+        balance, holdings = get_account_info()
+        # scalp가 추적하는 종목은 heartbeat 본문에 이미 표시되니 swing 보유에서 제외
+        swing_holdings = [
+            h for h in holdings
+            if h["stock_code"] not in scalp_codes and h["quantity"] > 0
+        ]
+        return balance, swing_holdings
+    except Exception:
+        return None, None
 
 
 def run_all_loop(swing_interval_sec=300, scalp_stock=None, scalp_interval_sec=None):
@@ -138,12 +205,10 @@ def run_all_loop(swing_interval_sec=300, scalp_stock=None, scalp_interval_sec=No
     excluded_from_swing = {m.stock_code for m in monitors}
 
     swing_codes = [c for c in config.get_swing_stocks() if c not in excluded_from_swing]
-    swing_codes_text = ", ".join(config.format_stock(c) for c in swing_codes) or "(없음)"
-    scalp_codes_text = ", ".join(config.format_stock(m.stock_code) for m in monitors)
 
     log_info(f"=== 자동매매 시작 (MODE: {config.get_mode().upper()}) ===")
-    log_info(f"Swing  → {swing_codes_text}  (5분마다 일봉 분석/매매)")
-    log_info(f"Scalp  → {scalp_codes_text}  ({scalp_interval_sec}s 모멘텀 모니터링)")
+    log_info(_format_swing_block(swing_codes, swing_interval_sec))
+    log_info(_format_scalp_block(monitors, scalp_interval_sec))
 
     stop_event = threading.Event()
     scalp_threads = []
@@ -177,7 +242,9 @@ def run_all_loop(swing_interval_sec=300, scalp_stock=None, scalp_interval_sec=No
                 next_swing_at = now + swing_interval_sec
 
             if now >= next_heartbeat_at:
-                log_info(_format_heartbeat(monitors))
+                scalp_codes = {m.stock_code for m in monitors}
+                bal, swing_held = _fetch_balance_and_swing_holdings(scalp_codes)
+                log_info(_format_heartbeat(monitors, bal, swing_held))
                 next_heartbeat_at = now + config.get_heartbeat_interval_sec()
 
             time.sleep(1)
@@ -202,9 +269,8 @@ def run_scalp_loop(scalp_stock=None, scalp_interval_sec=None):
     monitors = _build_monitors(scalp_stock)
     scalp_interval_sec = scalp_interval_sec or config.get_scalp_interval_sec()
 
-    scalp_codes_text = ", ".join(config.format_stock(m.stock_code) for m in monitors)
     log_info(f"=== Scalp 시작 (MODE: {config.get_mode().upper()}) ===")
-    log_info(f"Scalp  → {scalp_codes_text}  ({scalp_interval_sec}s 모멘텀 모니터링)")
+    log_info(_format_scalp_block(monitors, scalp_interval_sec))
 
     stop_event = threading.Event()
     scalp_threads = []
@@ -232,7 +298,9 @@ def run_scalp_loop(scalp_stock=None, scalp_interval_sec=None):
 
             now = time.time()
             if now >= next_heartbeat_at:
-                log_info(_format_heartbeat(monitors))
+                scalp_codes = {m.stock_code for m in monitors}
+                bal, swing_held = _fetch_balance_and_swing_holdings(scalp_codes)
+                log_info(_format_heartbeat(monitors, bal, swing_held))
                 next_heartbeat_at = now + config.get_heartbeat_interval_sec()
 
             time.sleep(1)

@@ -5,7 +5,7 @@ import requests
 
 from src import config
 from src.auth import get_base_url, get_headers, get_mode
-from src.fetcher import _rate_limit
+from src.fetcher import _rate_limit, _RETRY_BACKOFFS
 
 
 def _get_account():
@@ -26,10 +26,12 @@ def _order_request(tr_id, stock_code, qty, price=0, order_type="01"):
         "ORD_QTY": str(qty),
         "ORD_UNPR": str(price) if order_type == "00" else "0",
     }
-    for attempt in range(3):
+    attempts = len(_RETRY_BACKOFFS)
+    for attempt in range(attempts):
         resp = requests.post(url, headers=headers, json=body, timeout=10)
         if resp.status_code in (429, 500, 502, 503, 504):
-            time.sleep(0.5 * (attempt + 1))
+            if attempt < attempts - 1:
+                time.sleep(_RETRY_BACKOFFS[attempt])
             continue
         resp.raise_for_status()
         data = resp.json()
@@ -68,10 +70,12 @@ def get_order_execution(odno: str, stock_code: str) -> dict:
     }
     url = f"{get_base_url()}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
     headers = get_headers(tr_id)
-    for attempt in range(3):
+    attempts = len(_RETRY_BACKOFFS)
+    for attempt in range(attempts):
         resp = requests.get(url, headers=headers, params=params, timeout=10)
         if resp.status_code in (429, 500, 502, 503, 504):
-            time.sleep(0.5 * (attempt + 1))
+            if attempt < attempts - 1:
+                time.sleep(_RETRY_BACKOFFS[attempt])
             continue
         resp.raise_for_status()
         data = resp.json()
@@ -215,10 +219,12 @@ def _inquire_balance_raw():
     }
     url = f"{get_base_url()}/uapi/domestic-stock/v1/trading/inquire-balance"
     headers = get_headers(tr_id)
-    for attempt in range(3):
+    attempts = len(_RETRY_BACKOFFS)
+    for attempt in range(attempts):
         resp = requests.get(url, headers=headers, params=params, timeout=10)
         if resp.status_code in (429, 500, 502, 503, 504):
-            time.sleep(0.5 * (attempt + 1))
+            if attempt < attempts - 1:
+                time.sleep(_RETRY_BACKOFFS[attempt])
             continue
         resp.raise_for_status()
         return resp.json()

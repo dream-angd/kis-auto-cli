@@ -79,7 +79,12 @@ def _check_holdings(holdings, state, excluded_codes=None):
         if h["stock_code"] in excluded_codes:
             continue
 
-        result = analyze(h["stock_code"], avg_price=h["avg_price"])
+        try:
+            result = analyze(h["stock_code"], avg_price=h["avg_price"])
+        except Exception as e:
+            # 한 종목 분석 실패가 다른 종목 매매를 막지 않게 격리
+            log_error(f"Swing analyze failed [{config.format_stock(h['stock_code'])}]: {e}")
+            continue
         log_signal(h["stock_code"], result["signal"], result["current_price"], result["reason"])
 
         if result["signal"] != "SELL":
@@ -136,7 +141,12 @@ def _check_targets(holdings, balance, state, excluded_codes=None):
         if available_cash <= 0:
             break
 
-        result = analyze(code)
+        try:
+            result = analyze(code)
+        except Exception as e:
+            # 한 종목 분석 실패가 다른 종목 매매를 막지 않게 격리
+            log_error(f"Swing analyze failed [{config.format_stock(code)}]: {e}")
+            continue
         log_signal(code, result["signal"], result["current_price"], result["reason"])
 
         if result["signal"] != "BUY":
@@ -283,12 +293,23 @@ def run_swing_cycle(state, excluded_codes=None):
         log_info("Swing strategy stopped by circuit breaker.")
         return False
 
+    # 잔고 조회 실패는 사이클 자체 포기 (이후 분석/매매 불가능)
     try:
         balance, holdings = get_account_info()
+    except Exception as e:
+        log_error(f"Swing balance fetch failed (사이클 skip): {e}")
+        return True  # 다음 사이클(5분 후) 재시도
+
+    # 종목별 분석/매매는 _check_holdings, _check_targets 내부에서
+    # 종목 단위로 try/except 격리되어 있음. 한 종목 실패가 다른 종목 매매를 막지 않는다.
+    try:
         _check_holdings(holdings, state, excluded_codes=excluded_codes)
+    except Exception as e:
+        log_error(f"Swing _check_holdings unexpected error: {e}")
+    try:
         _check_targets(holdings, balance, state, excluded_codes=excluded_codes)
     except Exception as e:
-        log_error(f"Swing cycle failed: {e}")
+        log_error(f"Swing _check_targets unexpected error: {e}")
     return True
 
 
@@ -316,9 +337,9 @@ def run_loop(interval_sec=300):
     _write_status()
     state = _load_state()
 
-    swing_codes_text = ", ".join(config.format_stock(c) for c in config.get_swing_stocks()) or "(없음)"
+    from src.combined import _format_swing_block
     log_info(f"=== Swing 시작 (MODE: {config.get_mode().upper()}) ===")
-    log_info(f"Swing  → {swing_codes_text}  ({interval_sec}s 일봉 분석/매매)")
+    log_info(_format_swing_block(config.get_swing_stocks(), interval_sec))
 
     try:
         while running:
