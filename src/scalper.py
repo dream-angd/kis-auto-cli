@@ -6,7 +6,7 @@ from datetime import date
 from src import config
 from src.fetcher import get_current_price
 from src.logger import log_error, log_info, log_trade
-from src.trader import buy, sell
+from src.trader import buy, get_holdings, sell
 
 
 class ScalpMonitor:
@@ -17,6 +17,8 @@ class ScalpMonitor:
 
         self.prices = deque(maxlen=config.get_scalp_window_size())
         self.state = self._load_state()
+        # reconcile 결과를 파일에 즉시 반영(desync 발견 시 다음 실행에서 재발 방지)
+        self._save_state()
 
     def _empty_state(self):
         return {
@@ -32,19 +34,69 @@ class ScalpMonitor:
     def _load_state(self):
         path = config.get_scalp_state_path()
         if not path.exists():
-            return self._empty_state()
+            return self._reconcile_with_holdings(self._empty_state())
         try:
             state = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
-            return self._empty_state()
+            return self._reconcile_with_holdings(self._empty_state())
 
         if state.get("mode") != config.get_mode():
-            return self._empty_state()
+            return self._reconcile_with_holdings(self._empty_state())
         if state.get("stock_code") != self.stock_code:
-            return self._empty_state()
+            return self._reconcile_with_holdings(self._empty_state())
         if state.get("date") != date.today().isoformat() and not state.get("position_qty"):
+            return self._reconcile_with_holdings(self._empty_state())
+        return self._reconcile_with_holdings({**self._empty_state(), **state})
+
+    def _reconcile_with_holdings(self, state):
+        """로컬 state를 KIS 실제 보유 수량과 비교해 동기화한다.
+
+        외부 매도/부분체결/수동 거래 등으로 발생한 desync를 막는다.
+        잔고 조회 실패 시(네트워크 오류 등) 로컬 state를 그대로 사용한다.
+        """
+        try:
+            held = next(
+                (h for h in get_holdings() if h["stock_code"] == self.stock_code),
+                None,
+            )
+        except Exception as e:
+            log_error(f"SCALP {self.stock_code} state reconcile skipped (잔고조회 실패): {e}")
+            return state
+
+        actual_qty = int(held["quantity"]) if held else 0
+        local_qty = int(state.get("position_qty", 0))
+
+        if local_qty == actual_qty:
+            return state
+
+        if actual_qty == 0 and local_qty > 0:
+            log_info(
+                f"SCALP {self.stock_code} state desync: local={local_qty}주, "
+                f"actual=0 → 포지션 초기화"
+            )
             return self._empty_state()
-        return {**self._empty_state(), **state}
+
+        if actual_qty < local_qty:
+            log_info(
+                f"SCALP {self.stock_code} state desync: local={local_qty}주, "
+                f"actual={actual_qty}주 → position_qty 동기화"
+            )
+            state["position_qty"] = actual_qty
+            return state
+
+        # actual_qty > local_qty: 외부 매수로 보유가 더 많음.
+        # 진입 정보(entry_price/time)를 모르므로 수량만 맞추고 entry는 평균가 사용.
+        log_info(
+            f"SCALP {self.stock_code} state desync: local={local_qty}주, "
+            f"actual={actual_qty}주 → 외부 매수 감지, 평균가로 entry 추정"
+        )
+        state["position_qty"] = actual_qty
+        if local_qty == 0:
+            avg = int(held.get("avg_price", 0))
+            state["entry_price"] = avg
+            state["high_price"] = avg
+            state["entry_time"] = time.time()
+        return state
 
     def _save_state(self):
         path = config.get_scalp_state_path()
