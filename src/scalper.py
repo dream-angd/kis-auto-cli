@@ -98,42 +98,103 @@ class ScalpMonitor:
 
     def _enter_position(self, price, reason):
         amount = config.get_scalp_max_buy_amount()
-        qty = amount // price
-        if qty <= 0:
+        requested_qty = amount // price
+        if requested_qty <= 0:
             log_info(f"SCALP {self.stock_code} buy skipped: amount {amount:,} < price {price:,}")
             return
 
         if config.is_scalp_trade_enabled():
             order = buy(self.stock_code, amount, price)
-            qty = int(order.get("_qty", qty))
+            filled_qty = int(order.get("filled_qty", 0))
+            fill_price = int(order.get("avg_fill_price", 0))
+            if filled_qty <= 0 or fill_price <= 0:
+                log_error(
+                    f"SCALP {self.stock_code} buy unfilled: ord={order.get('ord_qty')}, "
+                    f"filled={filled_qty}, odno={order.get('odno')}"
+                )
+                return
+            action = "SCALP_BUY" if order.get("fully_filled") else "SCALP_BUY_PARTIAL"
+            log_reason = self._annotate_reason(reason, order, requested_qty)
         else:
             log_info(f"SCALP {self.stock_code} paper buy signal only: {reason}")
+            filled_qty = requested_qty
+            fill_price = price
+            action = "SCALP_BUY"
+            log_reason = reason
 
         self.state.update({
             "date": date.today().isoformat(),
             "mode": config.get_mode(),
             "stock_code": self.stock_code,
-            "position_qty": qty,
-            "entry_price": price,
-            "high_price": price,
+            "position_qty": filled_qty,
+            "entry_price": fill_price,
+            "high_price": fill_price,
             "entry_time": time.time(),
         })
         self._save_state()
-        log_trade(self.stock_code, "SCALP_BUY", price, qty, price * qty, reason)
+        log_trade(self.stock_code, action, fill_price, filled_qty, fill_price * filled_qty, log_reason)
 
     def _exit_position(self, price, reason):
-        qty = int(self.state.get("position_qty", 0))
-        if qty <= 0:
+        held_qty = int(self.state.get("position_qty", 0))
+        if held_qty <= 0:
             return
 
+        entry_price = int(self.state.get("entry_price", 0))
+
         if config.is_scalp_trade_enabled():
-            sell(self.stock_code, qty)
+            order = sell(self.stock_code, held_qty, current_price=price)
+            filled_qty = int(order.get("filled_qty", 0))
+            fill_price = int(order.get("avg_fill_price", 0))
+            if filled_qty <= 0 or fill_price <= 0:
+                log_error(
+                    f"SCALP {self.stock_code} sell unfilled: ord={order.get('ord_qty')}, "
+                    f"filled={filled_qty}, odno={order.get('odno')}"
+                )
+                return
+            action = "SCALP_SELL" if order.get("fully_filled") else "SCALP_SELL_PARTIAL"
+            log_reason = self._annotate_reason(reason, order, held_qty)
         else:
             log_info(f"SCALP {self.stock_code} paper sell signal only: {reason}")
+            filled_qty = held_qty
+            fill_price = price
+            action = "SCALP_SELL"
+            log_reason = reason
 
-        log_trade(self.stock_code, "SCALP_SELL", price, qty, price * qty, reason)
-        self.state = self._empty_state()
-        self._save_state()
+        # 수수료/거래세 반영 실현손익
+        pnl = 0.0
+        if entry_price > 0 and filled_qty > 0:
+            gross = (fill_price - entry_price) * filled_qty
+            buy_fee = entry_price * filled_qty * config.get_buy_fee_rate()
+            sell_fee = fill_price * filled_qty * config.get_sell_fee_rate()
+            sell_tax = fill_price * filled_qty * config.get_sell_tax_rate()
+            pnl = gross - buy_fee - sell_fee - sell_tax
+
+        log_trade(
+            self.stock_code,
+            action,
+            fill_price,
+            filled_qty,
+            fill_price * filled_qty,
+            log_reason,
+            pnl=pnl,
+        )
+
+        remaining = held_qty - filled_qty
+        if remaining > 0:
+            self.state["position_qty"] = remaining
+            self._save_state()
+        else:
+            self.state = self._empty_state()
+            self._save_state()
+
+    @staticmethod
+    def _annotate_reason(base_reason: str, order: dict, requested_qty: int) -> str:
+        notes = [base_reason]
+        if not order.get("fully_filled", True):
+            notes.append(f"체결 {order.get('filled_qty', 0)}/{requested_qty}")
+        if order.get("estimated"):
+            notes.append("체결조회 실패-추정")
+        return " | ".join(notes)
 
     def run_once(self):
         try:

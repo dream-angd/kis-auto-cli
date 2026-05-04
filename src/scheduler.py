@@ -52,6 +52,26 @@ def is_market_open():
     return market_start <= now <= market_end
 
 
+def _calc_realized_pnl(avg_price: float, fill_price: float, qty: int) -> float:
+    """매매 수수료 + 매도 거래세를 차감한 실현손익."""
+    if qty <= 0:
+        return 0.0
+    gross = (fill_price - avg_price) * qty
+    buy_fee = avg_price * qty * config.get_buy_fee_rate()
+    sell_fee = fill_price * qty * config.get_sell_fee_rate()
+    sell_tax = fill_price * qty * config.get_sell_tax_rate()
+    return gross - buy_fee - sell_fee - sell_tax
+
+
+def _annotate_reason(base_reason: str, order: dict, requested_qty: int) -> str:
+    notes = [base_reason]
+    if not order.get("fully_filled", True):
+        notes.append(f"체결 {order['filled_qty']}/{requested_qty}")
+    if order.get("estimated"):
+        notes.append("체결조회 실패-추정")
+    return " | ".join(notes)
+
+
 def _check_holdings(holdings, state, excluded_codes=None):
     excluded_codes = excluded_codes or set()
     for h in holdings:
@@ -61,27 +81,42 @@ def _check_holdings(holdings, state, excluded_codes=None):
         result = analyze(h["stock_code"], avg_price=h["avg_price"])
         log_signal(h["stock_code"], result["signal"], result["current_price"], result["reason"])
 
-        if result["signal"] == "SELL":
-            try:
-                sell(h["stock_code"], h["quantity"])
-                pnl = (result["current_price"] - h["avg_price"]) * h["quantity"]
-                state["daily_loss"] += pnl
-                if pnl < 0:
-                    state["consecutive_losses"] += 1
-                else:
-                    state["consecutive_losses"] = 0
-                _save_state(state)
-                log_trade(
-                    h["stock_code"],
-                    "SELL",
-                    result["current_price"],
-                    h["quantity"],
-                    result["current_price"] * h["quantity"],
-                    result["reason"],
-                    pnl=pnl,
-                )
-            except Exception as e:
-                log_error(f"Swing sell failed [{h['stock_code']}]: {e}")
+        if result["signal"] != "SELL":
+            continue
+
+        try:
+            order = sell(h["stock_code"], h["quantity"], current_price=result["current_price"])
+        except Exception as e:
+            log_error(f"Swing sell failed [{h['stock_code']}]: {e}")
+            continue
+
+        filled_qty = int(order.get("filled_qty", 0))
+        fill_price = int(order.get("avg_fill_price", 0))
+        if filled_qty <= 0 or fill_price <= 0:
+            log_error(
+                f"Swing sell unfilled [{h['stock_code']}]: ord={order.get('ord_qty')}, "
+                f"filled={filled_qty}, odno={order.get('odno')}"
+            )
+            continue
+
+        pnl = _calc_realized_pnl(h["avg_price"], fill_price, filled_qty)
+        state["daily_loss"] += pnl
+        if pnl < 0:
+            state["consecutive_losses"] += 1
+        else:
+            state["consecutive_losses"] = 0
+        _save_state(state)
+
+        action = "SELL" if order.get("fully_filled") else "SELL_PARTIAL"
+        log_trade(
+            h["stock_code"],
+            action,
+            fill_price,
+            filled_qty,
+            int(fill_price * filled_qty),
+            _annotate_reason(result["reason"], order, h["quantity"]),
+            pnl=pnl,
+        )
 
 
 def _check_targets(holdings, balance, state, excluded_codes=None):
@@ -103,36 +138,55 @@ def _check_targets(holdings, balance, state, excluded_codes=None):
         result = analyze(code)
         log_signal(code, result["signal"], result["current_price"], result["reason"])
 
-        if result["signal"] == "BUY":
-            atr = result.get("atr", 0.0)
-            qty = calc_position_size(result["current_price"], atr, max_buy)
-            amount = qty * result["current_price"]
-            if available_cash < amount:
-                log_info(f"매수 가능 현금 부족: {available_cash:,}원 < {amount:,}원 (ATR={atr:.0f})")
-                continue
-            try:
-                order = buy(code, amount, result["current_price"])
-                available_cash -= amount
-                log_trade(
-                    code,
-                    "BUY",
-                    result["current_price"],
-                    qty,
-                    amount,
-                    result["reason"],
-                )
-            except Exception as e:
-                log_error(f"Swing buy failed [{code}]: {e}")
+        if result["signal"] != "BUY":
+            continue
+
+        atr = result.get("atr", 0.0)
+        qty = calc_position_size(result["current_price"], atr, max_buy)
+        amount = qty * result["current_price"]
+        if available_cash < amount:
+            log_info(f"매수 가능 현금 부족: {available_cash:,}원 < {amount:,}원 (ATR={atr:.0f})")
+            continue
+
+        try:
+            order = buy(code, amount, result["current_price"])
+        except Exception as e:
+            log_error(f"Swing buy failed [{code}]: {e}")
+            continue
+
+        filled_qty = int(order.get("filled_qty", 0))
+        fill_price = int(order.get("avg_fill_price", 0))
+        if filled_qty <= 0 or fill_price <= 0:
+            log_error(
+                f"Swing buy unfilled [{code}]: ord={order.get('ord_qty')}, "
+                f"filled={filled_qty}, odno={order.get('odno')}"
+            )
+            continue
+
+        actual_amount = int(fill_price * filled_qty)
+        buy_fee = int(actual_amount * config.get_buy_fee_rate())
+        available_cash -= actual_amount + buy_fee
+
+        action = "BUY" if order.get("fully_filled") else "BUY_PARTIAL"
+        log_trade(
+            code,
+            action,
+            fill_price,
+            filled_qty,
+            actual_amount,
+            _annotate_reason(result["reason"], order, qty),
+        )
 
 
 def _check_circuit_breaker(state):
     max_daily_loss = config.get_max_daily_loss()
     max_consecutive = config.get_max_consecutive_losses()
 
-    if abs(state["daily_loss"]) >= max_daily_loss:
+    # daily_loss는 누적 실현손익(부호 보존). 손실 한도 초과는 음수 방향에서만 판정.
+    if state["daily_loss"] <= -max_daily_loss:
         log_error(
             f"Circuit breaker: daily PnL {state['daily_loss']:,.0f}, "
-            f"limit {max_daily_loss:,.0f}"
+            f"limit -{max_daily_loss:,.0f}"
         )
         return True
     if state["consecutive_losses"] >= max_consecutive:

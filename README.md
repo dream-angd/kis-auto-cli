@@ -293,10 +293,6 @@ logs/
 
 ### 🔴 Critical — 즉시 수정 필요
 
-- **[버그] `daily_loss` 부호 처리 오류** — 매도 시 손익을 그대로 누적(`state["daily_loss"] += pnl`)하는데, 차단 조건은 `abs(daily_loss) >= max_daily_loss`. **수익이 한도를 넘어도 서킷이 발동**하여 매매 중단됨. 손실(음수)만 누적하도록 수정 필요 (`src/scheduler.py:68, 132`)
-- **[정합성] 시장가 주문 체결가 미사용** — `current_price * qty`로 amount 계산 후 로깅. 실제 체결가는 KIS 응답에 있으나 무시. 슬리피지가 손익·서킷 계산에서 누락되어 거래일지가 거짓이 됨 (`src/trader.py:39-52`)
-- **[정합성] 부분 체결 / 미체결 처리 없음** — `rt_cd == "0"`은 주문 접수 확인일 뿐 체결 보장이 아님. 체결 결과 재조회 로직 부재. scalp의 `position_qty`와 실제 보유 수량 불일치 가능 → 매도 실패 위험
-- **[정확도] 수수료·거래세 미반영** — `pnl = (current_price - avg_price) * qty` (`src/scheduler.py:67`). 매매 수수료, 거래세(KOSPI 0.18%, KOSDAQ 0.18%) 차감 없음. 서킷 기준값과 일별 손익 모두 낙관 편향
 - **[검증] 백테스트 모듈 부재** — 전략(MA cross + RSI + BB)이 검증된 적 없는 파라미터. `MODE=real` 전환 전 1년치 일봉 기반 백테스트 필수
 
 ### 🟠 High — 기능 안정성

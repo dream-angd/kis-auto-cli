@@ -102,6 +102,33 @@ def get_atr_risk_pct() -> float:
     return float(os.getenv("ATR_RISK_PCT", "0.01"))
 
 
+# --- 거래 비용 (수수료/거래세) ---
+def get_buy_fee_rate() -> float:
+    """매수 수수료율. 기본 0.015% (증권사별 협의 수수료에 맞춰 조정)."""
+    return float(os.getenv("BUY_FEE_RATE", "0.00015"))
+
+
+def get_sell_fee_rate() -> float:
+    """매도 수수료율. 기본 0.015%."""
+    return float(os.getenv("SELL_FEE_RATE", "0.00015"))
+
+
+def get_sell_tax_rate() -> float:
+    """매도 거래세율. 기본 0.18% (KOSPI/KOSDAQ 공통)."""
+    return float(os.getenv("SELL_TAX_RATE", "0.0018"))
+
+
+# --- 체결 조회 ---
+def get_fill_poll_attempts() -> int:
+    """주문 후 체결 조회 재시도 횟수. 기본 3회."""
+    return max(1, int(os.getenv("FILL_POLL_ATTEMPTS", "3")))
+
+
+def get_fill_poll_interval_sec() -> float:
+    """주문 후 체결 조회 간격(초). 기본 1.5초."""
+    return float(os.getenv("FILL_POLL_INTERVAL_SEC", "1.5"))
+
+
 # --- 로그 디렉토리 ---
 def get_logs_dir() -> Path:
     """logs/ 디렉토리 절대 경로. logger.py의 LOGS_DIR과 동일 경로."""
