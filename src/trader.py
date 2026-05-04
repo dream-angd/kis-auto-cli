@@ -28,8 +28,8 @@ def _order_request(tr_id, stock_code, qty, price=0, order_type="01"):
     }
     for attempt in range(3):
         resp = requests.post(url, headers=headers, json=body, timeout=10)
-        if resp.status_code == 429:
-            time.sleep(1 * (attempt + 1))
+        if resp.status_code in (429, 500, 502, 503, 504):
+            time.sleep(0.5 * (attempt + 1))
             continue
         resp.raise_for_status()
         data = resp.json()
@@ -70,8 +70,8 @@ def get_order_execution(odno: str, stock_code: str) -> dict:
     headers = get_headers(tr_id)
     for attempt in range(3):
         resp = requests.get(url, headers=headers, params=params, timeout=10)
-        if resp.status_code == 429:
-            time.sleep(1 * (attempt + 1))
+        if resp.status_code in (429, 500, 502, 503, 504):
+            time.sleep(0.5 * (attempt + 1))
             continue
         resp.raise_for_status()
         data = resp.json()
@@ -217,8 +217,8 @@ def _inquire_balance_raw():
     headers = get_headers(tr_id)
     for attempt in range(3):
         resp = requests.get(url, headers=headers, params=params, timeout=10)
-        if resp.status_code == 429:
-            time.sleep(1 * (attempt + 1))
+        if resp.status_code in (429, 500, 502, 503, 504):
+            time.sleep(0.5 * (attempt + 1))
             continue
         resp.raise_for_status()
         return resp.json()

@@ -42,23 +42,10 @@ echo.
 set "SWING_INTERVAL=300"
 set /p "SWING_INTERVAL=Swing interval seconds [300]: "
 if "%SWING_INTERVAL%"=="" set "SWING_INTERVAL=300"
-set "SCALP_CODE="
-set /p "SCALP_CODE=Scalp stock code [env/default]: "
-set "SCALP_INTERVAL="
-set /p "SCALP_INTERVAL=Scalp interval seconds [env/default]: "
-if "%SCALP_CODE%"=="" (
-    if "%SCALP_INTERVAL%"=="" (
-        "%PY%" main.py run-all --swing-interval %SWING_INTERVAL%
-    ) else (
-        "%PY%" main.py run-all --swing-interval %SWING_INTERVAL% --scalp-interval %SCALP_INTERVAL%
-    )
-) else (
-    if "%SCALP_INTERVAL%"=="" (
-        "%PY%" main.py run-all --swing-interval %SWING_INTERVAL% --scalp-code %SCALP_CODE%
-    ) else (
-        "%PY%" main.py run-all --swing-interval %SWING_INTERVAL% --scalp-code %SCALP_CODE% --scalp-interval %SCALP_INTERVAL%
-    )
-)
+set "SCALP_INTERVAL=1.5"
+set /p "SCALP_INTERVAL=Scalp interval seconds [1.5]: "
+if "%SCALP_INTERVAL%"=="" set "SCALP_INTERVAL=1.5"
+"%PY%" main.py run-all --swing-interval %SWING_INTERVAL% --scalp-interval %SCALP_INTERVAL%
 echo.
 pause
 goto menu
@@ -75,23 +62,10 @@ goto menu
 
 :scalp
 echo.
-set "CODE="
-set /p "CODE=Scalp stock code [env/default]: "
-set "INTERVAL="
-set /p "INTERVAL=Scalp interval seconds [env/default]: "
-if "%CODE%"=="" (
-    if "%INTERVAL%"=="" (
-        "%PY%" main.py scalp
-    ) else (
-        "%PY%" main.py scalp --interval %INTERVAL%
-    )
-) else (
-    if "%INTERVAL%"=="" (
-        "%PY%" main.py scalp %CODE%
-    ) else (
-        "%PY%" main.py scalp %CODE% --interval %INTERVAL%
-    )
-)
+set "INTERVAL=1.5"
+set /p "INTERVAL=Scalp interval seconds [1.5]: "
+if "%INTERVAL%"=="" set "INTERVAL=1.5"
+"%PY%" main.py scalp --interval %INTERVAL%
 echo.
 pause
 goto menu
