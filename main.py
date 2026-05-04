@@ -76,7 +76,8 @@ def cmd_history(args):
         print(f"\n  {date_str} 매매 이력 없음\n")
         return
 
-    with open(csv_path, "r", encoding="utf-8") as f:
+    # 파일이 손상돼도 가능한 부분만이라도 표시 (errors='replace')
+    with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
         rows = list(csv.DictReader(f))
 
     if not rows:
@@ -184,6 +185,12 @@ def main():
 
     try:
         args.func(args)
+    except UnicodeDecodeError as e:
+        # 예: trades_*.csv 등 로그 파일이 손상되어 utf-8 디코드 실패
+        print(f"\n[파일 인코딩 오류] {e}\n", file=sys.stderr)
+        print("  logs/ 디렉토리의 파일이 손상되었을 수 있습니다.", file=sys.stderr)
+        print("  해당 파일을 백업 후 삭제하면 다음 시작 시 자동 재생성됩니다.\n", file=sys.stderr)
+        sys.exit(2)
     except ValueError as e:
         # 예: SCALP_STOCKS / SWING_STOCKS에 잘못된 종목명/코드 입력
         print(f"\n[설정 오류] {e}\n", file=sys.stderr)
