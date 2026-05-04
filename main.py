@@ -182,7 +182,14 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    args.func(args)
+    try:
+        args.func(args)
+    except ValueError as e:
+        # 예: SCALP_STOCKS / SWING_STOCKS에 잘못된 종목명/코드 입력
+        print(f"\n[설정 오류] {e}\n", file=sys.stderr)
+        print("  .env의 SWING_STOCKS / SCALP_STOCKS 값을 확인하세요.", file=sys.stderr)
+        print("  종목명 또는 6자리 종목코드 사용 가능 (예: 'SK하이닉스' 또는 '000660').\n", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

@@ -28,9 +28,10 @@ def _load_state() -> dict:
 
 
 def _save_state(state: dict) -> None:
-    path = config.get_state_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    config.atomic_write_text(
+        config.get_state_path(),
+        json.dumps(state, ensure_ascii=False, indent=2),
+    )
 
 
 def load_state() -> dict:
