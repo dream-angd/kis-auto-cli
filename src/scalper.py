@@ -6,7 +6,7 @@ from datetime import date
 from src import config
 from src.fetcher import get_current_price
 from src.logger import log_error, log_info, log_trade
-from src.trader import buy, sell
+from src.trader import buy, get_holdings, sell
 
 
 class ScalpMonitor:
@@ -17,6 +17,8 @@ class ScalpMonitor:
 
         self.prices = deque(maxlen=config.get_scalp_window_size())
         self.state = self._load_state()
+        # reconcile 결과를 파일에 즉시 반영(desync 발견 시 다음 실행에서 재발 방지)
+        self._save_state()
 
     def _empty_state(self):
         return {
@@ -32,19 +34,69 @@ class ScalpMonitor:
     def _load_state(self):
         path = config.get_scalp_state_path()
         if not path.exists():
-            return self._empty_state()
+            return self._reconcile_with_holdings(self._empty_state())
         try:
             state = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
-            return self._empty_state()
+            return self._reconcile_with_holdings(self._empty_state())
 
         if state.get("mode") != config.get_mode():
-            return self._empty_state()
+            return self._reconcile_with_holdings(self._empty_state())
         if state.get("stock_code") != self.stock_code:
-            return self._empty_state()
+            return self._reconcile_with_holdings(self._empty_state())
         if state.get("date") != date.today().isoformat() and not state.get("position_qty"):
+            return self._reconcile_with_holdings(self._empty_state())
+        return self._reconcile_with_holdings({**self._empty_state(), **state})
+
+    def _reconcile_with_holdings(self, state):
+        """로컬 state를 KIS 실제 보유 수량과 비교해 동기화한다.
+
+        외부 매도/부분체결/수동 거래 등으로 발생한 desync를 막는다.
+        잔고 조회 실패 시(네트워크 오류 등) 로컬 state를 그대로 사용한다.
+        """
+        try:
+            held = next(
+                (h for h in get_holdings() if h["stock_code"] == self.stock_code),
+                None,
+            )
+        except Exception as e:
+            log_error(f"SCALP {self.stock_code} state reconcile skipped (잔고조회 실패): {e}")
+            return state
+
+        actual_qty = int(held["quantity"]) if held else 0
+        local_qty = int(state.get("position_qty", 0))
+
+        if local_qty == actual_qty:
+            return state
+
+        if actual_qty == 0 and local_qty > 0:
+            log_info(
+                f"SCALP {self.stock_code} state desync: local={local_qty}주, "
+                f"actual=0 → 포지션 초기화"
+            )
             return self._empty_state()
-        return {**self._empty_state(), **state}
+
+        if actual_qty < local_qty:
+            log_info(
+                f"SCALP {self.stock_code} state desync: local={local_qty}주, "
+                f"actual={actual_qty}주 → position_qty 동기화"
+            )
+            state["position_qty"] = actual_qty
+            return state
+
+        # actual_qty > local_qty: 외부 매수로 보유가 더 많음.
+        # 진입 정보(entry_price/time)를 모르므로 수량만 맞추고 entry는 평균가 사용.
+        log_info(
+            f"SCALP {self.stock_code} state desync: local={local_qty}주, "
+            f"actual={actual_qty}주 → 외부 매수 감지, 평균가로 entry 추정"
+        )
+        state["position_qty"] = actual_qty
+        if local_qty == 0:
+            avg = int(held.get("avg_price", 0))
+            state["entry_price"] = avg
+            state["high_price"] = avg
+            state["entry_time"] = time.time()
+        return state
 
     def _save_state(self):
         path = config.get_scalp_state_path()
@@ -98,42 +150,103 @@ class ScalpMonitor:
 
     def _enter_position(self, price, reason):
         amount = config.get_scalp_max_buy_amount()
-        qty = amount // price
-        if qty <= 0:
+        requested_qty = amount // price
+        if requested_qty <= 0:
             log_info(f"SCALP {self.stock_code} buy skipped: amount {amount:,} < price {price:,}")
             return
 
         if config.is_scalp_trade_enabled():
             order = buy(self.stock_code, amount, price)
-            qty = int(order.get("_qty", qty))
+            filled_qty = int(order.get("filled_qty", 0))
+            fill_price = int(order.get("avg_fill_price", 0))
+            if filled_qty <= 0 or fill_price <= 0:
+                log_error(
+                    f"SCALP {self.stock_code} buy unfilled: ord={order.get('ord_qty')}, "
+                    f"filled={filled_qty}, odno={order.get('odno')}"
+                )
+                return
+            action = "SCALP_BUY" if order.get("fully_filled") else "SCALP_BUY_PARTIAL"
+            log_reason = self._annotate_reason(reason, order, requested_qty)
         else:
             log_info(f"SCALP {self.stock_code} paper buy signal only: {reason}")
+            filled_qty = requested_qty
+            fill_price = price
+            action = "SCALP_BUY"
+            log_reason = reason
 
         self.state.update({
             "date": date.today().isoformat(),
             "mode": config.get_mode(),
             "stock_code": self.stock_code,
-            "position_qty": qty,
-            "entry_price": price,
-            "high_price": price,
+            "position_qty": filled_qty,
+            "entry_price": fill_price,
+            "high_price": fill_price,
             "entry_time": time.time(),
         })
         self._save_state()
-        log_trade(self.stock_code, "SCALP_BUY", price, qty, price * qty, reason)
+        log_trade(self.stock_code, action, fill_price, filled_qty, fill_price * filled_qty, log_reason)
 
     def _exit_position(self, price, reason):
-        qty = int(self.state.get("position_qty", 0))
-        if qty <= 0:
+        held_qty = int(self.state.get("position_qty", 0))
+        if held_qty <= 0:
             return
 
+        entry_price = int(self.state.get("entry_price", 0))
+
         if config.is_scalp_trade_enabled():
-            sell(self.stock_code, qty)
+            order = sell(self.stock_code, held_qty, current_price=price)
+            filled_qty = int(order.get("filled_qty", 0))
+            fill_price = int(order.get("avg_fill_price", 0))
+            if filled_qty <= 0 or fill_price <= 0:
+                log_error(
+                    f"SCALP {self.stock_code} sell unfilled: ord={order.get('ord_qty')}, "
+                    f"filled={filled_qty}, odno={order.get('odno')}"
+                )
+                return
+            action = "SCALP_SELL" if order.get("fully_filled") else "SCALP_SELL_PARTIAL"
+            log_reason = self._annotate_reason(reason, order, held_qty)
         else:
             log_info(f"SCALP {self.stock_code} paper sell signal only: {reason}")
+            filled_qty = held_qty
+            fill_price = price
+            action = "SCALP_SELL"
+            log_reason = reason
 
-        log_trade(self.stock_code, "SCALP_SELL", price, qty, price * qty, reason)
-        self.state = self._empty_state()
-        self._save_state()
+        # 수수료/거래세 반영 실현손익
+        pnl = 0.0
+        if entry_price > 0 and filled_qty > 0:
+            gross = (fill_price - entry_price) * filled_qty
+            buy_fee = entry_price * filled_qty * config.get_buy_fee_rate()
+            sell_fee = fill_price * filled_qty * config.get_sell_fee_rate()
+            sell_tax = fill_price * filled_qty * config.get_sell_tax_rate()
+            pnl = gross - buy_fee - sell_fee - sell_tax
+
+        log_trade(
+            self.stock_code,
+            action,
+            fill_price,
+            filled_qty,
+            fill_price * filled_qty,
+            log_reason,
+            pnl=pnl,
+        )
+
+        remaining = held_qty - filled_qty
+        if remaining > 0:
+            self.state["position_qty"] = remaining
+            self._save_state()
+        else:
+            self.state = self._empty_state()
+            self._save_state()
+
+    @staticmethod
+    def _annotate_reason(base_reason: str, order: dict, requested_qty: int) -> str:
+        notes = [base_reason]
+        if not order.get("fully_filled", True):
+            notes.append(f"체결 {order.get('filled_qty', 0)}/{requested_qty}")
+        if order.get("estimated"):
+            notes.append("체결조회 실패-추정")
+        return " | ".join(notes)
 
     def run_once(self):
         try:
