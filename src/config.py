@@ -403,6 +403,15 @@ def get_scalp_max_hold_sec() -> int:
     return int(os.getenv("SCALP_MAX_HOLD_SEC", "300"))
 
 
+def get_scalp_slippage_buffer_pct() -> float:
+    """매도 판단 시 break-even 계산에 더할 슬리피지 버퍼 (소수, 기본 0.0005 = 0.05%).
+
+    실제 시장가 주문은 호가 spread/유동성에 따라 ±0.05~0.1% 정도 슬리피지 발생.
+    break_even = buy_fee + sell_fee + sell_tax + slippage_buffer.
+    """
+    return float(os.getenv("SCALP_SLIPPAGE_BUFFER_PCT", "0.0005"))
+
+
 def get_scalp_bid_ask_ratio_min() -> float:
     """매수 진입 시 매수잔량/매도잔량 최소 비율.
     1.0 = 매수≥매도, 1.2 = 매수가 매도보다 20% 많아야 진입.

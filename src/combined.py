@@ -226,6 +226,13 @@ def _format_scalp_block(monitors, interval_sec: float) -> str:
         f"추적 -{config.get_scalp_trailing_drop_pct():.1f}% / "
         f"한도 {config.get_scalp_max_buy_amount():,}원"
     )
+    # 비용 포함 본전선 표시 (추적/타임아웃 판단 기준)
+    from src.scalper import ScalpMonitor
+    be_pct = ScalpMonitor._break_even_pct()
+    lines.append(
+        f"  비용 break-even ≈ {be_pct:.2f}%  "
+        f"(매수·매도 수수료 + 거래세 + 슬리피지 {config.get_scalp_slippage_buffer_pct()*100:.2f}%)"
+    )
     ratio_min = config.get_scalp_bid_ask_ratio_min()
     if ratio_min > 0:
         lines.append(f"  호가 검증 bid/ask >= {ratio_min:.1f}")
