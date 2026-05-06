@@ -1,6 +1,5 @@
 import csv
 import json
-import signal
 import threading
 import time
 import unicodedata
@@ -10,6 +9,8 @@ from src import config, risk
 from src.logger import log_error, log_info
 from src.scalper import ScalpMonitor
 from src.scheduler import is_market_open, load_state, run_swing_cycle
+from src.signals import install_shutdown_handlers, restore_handlers
+from src.trader import get_holdings
 
 
 def _market_closed_for_today():
@@ -335,6 +336,60 @@ def _format_heartbeat(monitors, balance=None, swing_holdings=None) -> str:
     return "\n".join(lines)
 
 
+def _reconcile_all_monitors(monitors) -> None:
+    """get_holdings를 1회만 호출하고 모든 monitor의 state를 재동기화.
+
+    주기적으로 run_loop에서 호출. HTS 직접 매도/매수, KIS 내부 desync 등을
+    unknown_fill 발생 전에 발견·정정해 다음 사이클이 깨끗한 state로 진입하게 한다.
+    잔고 조회 실패 시 모두 skip (로그만 남김).
+    """
+    if not monitors:
+        return
+    try:
+        holdings = get_holdings()
+    except Exception as e:
+        log_error(f"Periodic reconcile skipped (잔고조회 실패): {e}")
+        return
+
+    by_code = {h["stock_code"]: h for h in holdings}
+    for m in monitors:
+        held = by_code.get(m.stock_code)
+        actual_qty = int(held["quantity"]) if held else 0
+        local_qty = int(m.state.get("position_qty", 0))
+        if actual_qty == local_qty:
+            continue
+
+        if actual_qty == 0 and local_qty > 0:
+            log_info(
+                f"SCALP {m.display} reconcile desync: local={local_qty}주, "
+                f"actual=0 → 포지션 초기화"
+            )
+            m.state = m._empty_state()
+        elif actual_qty < local_qty:
+            log_info(
+                f"SCALP {m.display} reconcile desync: local={local_qty}주, "
+                f"actual={actual_qty}주 → position_qty 동기화"
+            )
+            m.state["position_qty"] = actual_qty
+        else:
+            # actual_qty > local_qty: 외부 매수 감지
+            avg = int(held.get("avg_price", 0)) if held else 0
+            log_info(
+                f"SCALP {m.display} reconcile desync: local={local_qty}주, "
+                f"actual={actual_qty}주 → 외부 매수 감지, 평균가로 entry 추정"
+            )
+            m.state["position_qty"] = actual_qty
+            if avg > 0 and m.state.get("entry_price", 0) <= 0:
+                m.state["entry_price"] = avg
+                m.state["high_price"] = max(avg, int(m.state.get("high_price", 0)))
+                m.state["entry_time"] = m.state.get("entry_time") or time.time()
+
+        try:
+            m._save_state()
+        except Exception as e:
+            log_error(f"SCALP {m.display} reconcile save 실패: {e}")
+
+
 def _fetch_balance_and_swing_holdings(scalp_codes: set):
     """heartbeat용 잔고 + swing 보유 조회. 실패 시 (None, None) 반환."""
     try:
@@ -358,7 +413,7 @@ def run_all_loop(swing_interval_sec=300, scalp_stock=None, scalp_interval_sec=No
         log_info("Shutdown signal received. Combined strategy stopping...")
         running = False
 
-    prev_handler = signal.signal(signal.SIGINT, signal_handler)
+    prev_handlers = install_shutdown_handlers(signal_handler)
 
     swing_state = load_state()
     monitors = _build_monitors(scalp_stock)
@@ -375,6 +430,8 @@ def run_all_loop(swing_interval_sec=300, scalp_stock=None, scalp_interval_sec=No
     scalp_threads = []
     next_swing_at = 0
     next_heartbeat_at = 0
+    next_reconcile_at = 0
+    reconcile_interval = config.get_reconcile_interval_sec()
     market_threads_active = False
 
     try:
@@ -395,6 +452,8 @@ def run_all_loop(swing_interval_sec=300, scalp_stock=None, scalp_interval_sec=No
                 scalp_threads = _start_scalp_threads(monitors, scalp_interval_sec, stop_event)
                 market_threads_active = True
                 next_heartbeat_at = time.time() + config.get_heartbeat_interval_sec()
+                if reconcile_interval > 0:
+                    next_reconcile_at = time.time() + reconcile_interval
 
             now = time.time()
             if now >= next_swing_at:
@@ -407,6 +466,10 @@ def run_all_loop(swing_interval_sec=300, scalp_stock=None, scalp_interval_sec=No
                 log_info("마감 임박 + 모든 보유 청산 완료 — 자동매매 조기 종료")
                 break
 
+            if reconcile_interval > 0 and now >= next_reconcile_at:
+                _reconcile_all_monitors(monitors)
+                next_reconcile_at = now + reconcile_interval
+
             if now >= next_heartbeat_at:
                 scalp_codes = {m.stock_code for m in monitors}
                 bal, swing_held = _fetch_balance_and_swing_holdings(scalp_codes)
@@ -417,7 +480,7 @@ def run_all_loop(swing_interval_sec=300, scalp_stock=None, scalp_interval_sec=No
     finally:
         if market_threads_active:
             _stop_scalp_threads(scalp_threads, stop_event)
-        signal.signal(signal.SIGINT, prev_handler)
+        restore_handlers(prev_handlers)
         print_daily_summary()
 
     log_info("=== Combined strategy stopped ===")
@@ -431,7 +494,7 @@ def run_scalp_loop(scalp_stock=None, scalp_interval_sec=None):
         log_info("Shutdown signal received. Scalp strategy stopping...")
         running = False
 
-    prev_handler = signal.signal(signal.SIGINT, signal_handler)
+    prev_handlers = install_shutdown_handlers(signal_handler)
 
     monitors = _build_monitors(scalp_stock)
     scalp_interval_sec = scalp_interval_sec or config.get_scalp_interval_sec()
@@ -442,6 +505,8 @@ def run_scalp_loop(scalp_stock=None, scalp_interval_sec=None):
     stop_event = threading.Event()
     scalp_threads = []
     next_heartbeat_at = 0
+    next_reconcile_at = 0
+    reconcile_interval = config.get_reconcile_interval_sec()
     market_threads_active = False
 
     try:
@@ -462,6 +527,8 @@ def run_scalp_loop(scalp_stock=None, scalp_interval_sec=None):
                 scalp_threads = _start_scalp_threads(monitors, scalp_interval_sec, stop_event)
                 market_threads_active = True
                 next_heartbeat_at = time.time() + config.get_heartbeat_interval_sec()
+                if reconcile_interval > 0:
+                    next_reconcile_at = time.time() + reconcile_interval
 
             # 마감 강제 청산 + 모든 보유 0 → 조기 종료
             if _is_post_close_done(monitors):
@@ -469,6 +536,10 @@ def run_scalp_loop(scalp_stock=None, scalp_interval_sec=None):
                 break
 
             now = time.time()
+            if reconcile_interval > 0 and now >= next_reconcile_at:
+                _reconcile_all_monitors(monitors)
+                next_reconcile_at = now + reconcile_interval
+
             if now >= next_heartbeat_at:
                 scalp_codes = {m.stock_code for m in monitors}
                 bal, swing_held = _fetch_balance_and_swing_holdings(scalp_codes)
@@ -479,7 +550,7 @@ def run_scalp_loop(scalp_stock=None, scalp_interval_sec=None):
     finally:
         if market_threads_active:
             _stop_scalp_threads(scalp_threads, stop_event)
-        signal.signal(signal.SIGINT, prev_handler)
+        restore_handlers(prev_handlers)
         print_daily_summary()
 
     log_info("=== Scalp strategy stopped ===")

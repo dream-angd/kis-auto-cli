@@ -1,6 +1,5 @@
 import json
 import os
-import signal
 import time
 from datetime import date, datetime
 
@@ -9,6 +8,7 @@ import holidays
 from src import config, risk
 from src.analyzer import analyze, calc_position_size
 from src.logger import log_error, log_info, log_signal, log_trade
+from src.signals import install_shutdown_handlers, restore_handlers
 from src.trader import buy, get_account_info, sell
 
 KR_HOLIDAYS = holidays.KR()
@@ -332,7 +332,7 @@ def run_loop(interval_sec=300):
         log_info("Shutdown signal received. Graceful shutdown...")
         running = False
 
-    prev_handler = signal.signal(signal.SIGINT, signal_handler)
+    prev_handlers = install_shutdown_handlers(signal_handler)
     _write_status()
     state = _load_state()
 
@@ -360,7 +360,7 @@ def run_loop(interval_sec=300):
     finally:
         _clear_status()
         _maybe_generate_report()
-        signal.signal(signal.SIGINT, prev_handler)
+        restore_handlers(prev_handlers)
         from src.combined import print_daily_summary
         print_daily_summary()
 
