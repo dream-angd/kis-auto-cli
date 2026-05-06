@@ -56,7 +56,16 @@ def _build_monitors(scalp_codes):
             f".env의 MAX_SCALP_STOCKS 또는 SCALP_STOCKS를 조정하세요."
         )
 
-    return [ScalpMonitor(code) for code in seen]
+    # 부팅 시 N개 monitor가 각자 get_holdings()를 호출하면 KIS API에 N번
+    # 직렬 요청 → 부팅 3~6초 지연. 1회만 받아 공유한다.
+    log_info(f"[부팅] {len(seen)}종목 초기화 중 (잔고 1회 조회 후 공유)...")
+    try:
+        prefetched = get_holdings()
+    except Exception as e:
+        log_error(f"부팅 잔고조회 실패 (각 monitor가 개별 fetch로 진행): {e}")
+        prefetched = None
+
+    return [ScalpMonitor(code, holdings=prefetched) for code in seen]
 
 
 def _start_scalp_threads(monitors, interval_sec, stop_event):
@@ -249,10 +258,58 @@ def _format_scalp_block(monitors, interval_sec: float) -> str:
     return "\n".join(lines)
 
 
+def _format_heartbeat_compact(monitors, balance, swing_holdings) -> str:
+    """모든 monitor가 보유 0(idle)일 때 사용하는 컴팩트 포맷.
+
+    1줄: [scalp 대기 N/N] 005930=267,000 000660=1,605,000 ...
+    2줄: (잔고 있을 때) Cash {cash} 실현 {realized} W/L {w}/{l}({pct}%)
+    3줄+: swing 보유가 있으면 그것만 추가 (대기 종목 N줄은 압축됨)
+    """
+    n = len(monitors)
+    parts = []
+    for m in monitors:
+        # 코드 대신 종목명 (없으면 코드로 fallback) — 사용자 가독성
+        name = config.get_stock_name(m.stock_code)
+        if m.last_price > 0:
+            parts.append(f"{name}={m.last_price:,}")
+        else:
+            parts.append(f"{name}=조회중")
+    lines = [f"[scalp 대기 {n}/{n}] " + " ".join(parts)]
+
+    if balance:
+        cash = balance.get("cash", 0)
+        try:
+            rs = risk.load_state()
+            realized = rs.get("daily_loss", 0.0)
+            wins = rs.get("wins", 0)
+            losses = rs.get("losses", 0)
+            trade_count = rs.get("trade_count", 0)
+            max_loss = config.get_max_daily_loss()
+            used_pct = (abs(realized) / max_loss * 100) if max_loss > 0 and realized < 0 else 0.0
+            limit_tag = " ⚠ 한도 초과" if risk.is_daily_loss_limit_hit() else ""
+            lines.append(
+                f"  Cash {cash:,} 실현 {realized:+,.0f} "
+                f"W/L {wins}/{losses} (총 {trade_count}건, 한도 {used_pct:.0f}%){limit_tag}"
+            )
+        except Exception:
+            lines.append(f"  Cash {cash:,}")
+
+    if swing_holdings:
+        for h in swing_holdings:
+            name = config.format_stock(h["stock_code"])
+            lines.append(
+                f"  Swing 보유: {name} {h['quantity']}주 "
+                f"{h['profit_rate']:+.2f}% ({h['profit_loss']:+,}원)"
+            )
+
+    return "\n".join(lines)
+
+
 def _format_heartbeat(monitors, balance=None, swing_holdings=None) -> str:
     """scalp 종목별 가격/상태/손익 + (옵션) 잔고/swing 보유 한 줄 추가.
 
-    포맷:
+    보유 0(idle) 시 컴팩트 모드로 분기 (`_format_heartbeat_compact`).
+    보유가 1개라도 있으면 풀 포맷:
       [scalp 상태] (보유 N / 대기 M)
         삼성전자(005930)        227,500   대기
         현대차(005380)          540,000   보유 +0.32%
@@ -264,8 +321,12 @@ def _format_heartbeat(monitors, balance=None, swing_holdings=None) -> str:
         return "[scalp 상태] (모니터 없음)"
 
     held = sum(1 for m in monitors if m._has_position())
+    if held == 0:
+        return _format_heartbeat_compact(monitors, balance, swing_holdings)
+
     waiting = len(monitors) - held
-    lines = [f"[scalp 상태] (보유 {held} / 대기 {waiting})"]
+    # 풀 모드(보유 ≥ 1)는 N줄로 떠서 직전 로그와 시각적 분리가 필요 — 빈 줄 prepend
+    lines = ["", f"[scalp 상태] (보유 {held} / 대기 {waiting})"]
 
     name_w = max(_disp_width(m.display) for m in monitors)
     for m in monitors:
@@ -405,7 +466,9 @@ def _fetch_balance_and_swing_holdings(scalp_codes: set):
         return None, None
 
 
-def run_all_loop(swing_interval_sec=300, scalp_stock=None, scalp_interval_sec=None):
+def run_all_loop(swing_interval_sec=None, scalp_stock=None, scalp_interval_sec=None):
+    if swing_interval_sec is None:
+        swing_interval_sec = config.get_swing_interval_sec()
     running = True
 
     def signal_handler(sig, frame):
@@ -423,7 +486,7 @@ def run_all_loop(swing_interval_sec=300, scalp_stock=None, scalp_interval_sec=No
     swing_codes = [c for c in config.get_swing_stocks() if c not in excluded_from_swing]
 
     log_info(f"=== 자동매매 시작 (MODE: {config.get_mode().upper()}) ===")
-    log_info(_format_swing_block(swing_codes, swing_interval_sec))
+    log_info(_format_swing_block(swing_codes, swing_interval_sec) + "\n")
     log_info(_format_scalp_block(monitors, scalp_interval_sec))
 
     stop_event = threading.Event()

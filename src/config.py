@@ -385,6 +385,11 @@ def get_scalp_interval_sec() -> float:
     return float(os.getenv("SCALP_INTERVAL_SEC", "2"))
 
 
+def get_swing_interval_sec() -> int:
+    """swing 분석 주기 (초). 기본 300. 5초 미만은 clamp."""
+    return max(5, int(os.getenv("SWING_INTERVAL_SEC", "300")))
+
+
 def get_scalp_max_buy_amount() -> int:
     return int(os.getenv("SCALP_MAX_BUY_AMOUNT", "100000"))
 

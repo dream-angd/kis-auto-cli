@@ -88,6 +88,11 @@ def test_buy_blocked_when_daily_loss_limit_hit(isolated_risk_state, monkeypatch)
     """daily_loss 한도 초과 상태에서 buy_signal True여도 _enter_position 호출 안 됨."""
     from src import risk
 
+    # 시간 의존성 제거 — 마감 임박 차단(SCALP_NO_NEW_BUY_BEFORE_CLOSE_MIN)이 발동하지 않게
+    # 0으로 비활성화. 이 테스트는 daily_loss 한도 동작만 검증.
+    monkeypatch.setenv("SCALP_NO_NEW_BUY_BEFORE_CLOSE_MIN", "0")
+    monkeypatch.setenv("SCALP_FORCE_CLOSE_BEFORE_CLOSE_MIN", "0")
+
     # 한도 초과 만들기
     risk.record_realized_pnl("scalp", -150000)  # MAX_DAILY_LOSS=100000
     assert risk.is_daily_loss_limit_hit() is True
@@ -115,6 +120,10 @@ def test_buy_blocked_when_daily_loss_limit_hit(isolated_risk_state, monkeypatch)
 def test_buy_allowed_when_daily_loss_below_limit(isolated_risk_state, monkeypatch):
     """daily_loss 한도 미만이면 평소처럼 buy 가능."""
     from src import risk
+
+    # 시간 의존성 제거 — 마감 임박 차단이 발동하지 않게 비활성화
+    monkeypatch.setenv("SCALP_NO_NEW_BUY_BEFORE_CLOSE_MIN", "0")
+    monkeypatch.setenv("SCALP_FORCE_CLOSE_BEFORE_CLOSE_MIN", "0")
 
     risk.record_realized_pnl("scalp", -50000)  # 한도 100000의 절반
     assert risk.is_daily_loss_limit_hit() is False
@@ -156,8 +165,7 @@ def test_heartbeat_shows_realized_pnl_and_wl(isolated_risk_state, monkeypatch):
     fake_balance = {"cash": 50000000, "total_eval": 49992500, "profit_loss": 0}
 
     out = _format_heartbeat([m], balance=fake_balance, swing_holdings=None)
-    assert "미실현" in out
-    assert "오늘 자산변화" in out  # KIS 자산증감
+    # idle 컴팩트 모드: 미실현/오늘 자산변화는 노이즈로 생략, 핵심 지표만 1줄
     assert "실현" in out  # 자체 실현 손익 라인
     assert "-7,500" in out  # 자체 실현 손익 값
     assert "W/L 2/3" in out
