@@ -324,7 +324,9 @@ def _log_closed_market_message():
     return False
 
 
-def run_loop(interval_sec=300):
+def run_loop(interval_sec=None):
+    if interval_sec is None:
+        interval_sec = config.get_swing_interval_sec()
     running = True
 
     def signal_handler(sig, frame):

@@ -39,33 +39,21 @@ if errorlevel 1 goto run_all
 
 :run_all
 echo.
-set "SWING_INTERVAL=300"
-set /p "SWING_INTERVAL=Swing interval seconds [300]: "
-if "%SWING_INTERVAL%"=="" set "SWING_INTERVAL=300"
-set "SCALP_INTERVAL=1.5"
-set /p "SCALP_INTERVAL=Scalp interval seconds [1.5]: "
-if "%SCALP_INTERVAL%"=="" set "SCALP_INTERVAL=1.5"
-"%PY%" main.py run-all --swing-interval %SWING_INTERVAL% --scalp-interval %SCALP_INTERVAL%
+"%PY%" main.py run-all
 echo.
 pause
 goto menu
 
 :run
 echo.
-set "INTERVAL=300"
-set /p "INTERVAL=Swing interval seconds [300]: "
-if "%INTERVAL%"=="" set "INTERVAL=300"
-"%PY%" main.py run --interval %INTERVAL%
+"%PY%" main.py run
 echo.
 pause
 goto menu
 
 :scalp
 echo.
-set "INTERVAL=1.5"
-set /p "INTERVAL=Scalp interval seconds [1.5]: "
-if "%INTERVAL%"=="" set "INTERVAL=1.5"
-"%PY%" main.py scalp --interval %INTERVAL%
+"%PY%" main.py scalp
 echo.
 pause
 goto menu

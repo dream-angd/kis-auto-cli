@@ -10,14 +10,19 @@ from src.trader import buy, get_holdings, sell
 
 
 class ScalpMonitor:
-    def __init__(self, stock_code=None):
+    def __init__(self, stock_code=None, holdings=None):
+        """holdings(list)를 주입하면 부팅 시 자체 get_holdings 호출을 생략한다.
+
+        N개 monitor를 동시에 만들 때 _build_monitors에서 1회 prefetch한
+        결과를 공유하는 용도. 미주입 시(=None) 기존 동작대로 직접 fetch.
+        """
         self.stock_code = stock_code or config.get_scalp_stock()
         if not self.stock_code:
             raise ValueError("SCALP_STOCK or TARGET_STOCKS must contain at least one stock code.")
 
         self.display = config.format_stock(self.stock_code)  # 로그 표기용
         self.prices = deque(maxlen=config.get_scalp_window_size())
-        self.state = self._load_state()
+        self.state = self._load_state(holdings=holdings)
         # reconcile 결과를 파일에 즉시 반영(desync 발견 시 다음 실행에서 재발 방지)
         self._save_state()
         self.next_run_at = 0.0  # 종목별 다음 실행 시각 (epoch)
@@ -60,32 +65,36 @@ class ScalpMonitor:
             "entry_time": 0,
         }
 
-    def _load_state(self):
+    def _load_state(self, holdings=None):
         path = config.get_scalp_state_path(self.stock_code)
         if not path.exists():
-            return self._reconcile_with_holdings(self._empty_state())
+            return self._reconcile_with_holdings(self._empty_state(), holdings=holdings)
         try:
             state = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
-            return self._reconcile_with_holdings(self._empty_state())
+            return self._reconcile_with_holdings(self._empty_state(), holdings=holdings)
 
         if state.get("mode") != config.get_mode():
-            return self._reconcile_with_holdings(self._empty_state())
+            return self._reconcile_with_holdings(self._empty_state(), holdings=holdings)
         if state.get("stock_code") != self.stock_code:
-            return self._reconcile_with_holdings(self._empty_state())
+            return self._reconcile_with_holdings(self._empty_state(), holdings=holdings)
         if state.get("date") != date.today().isoformat() and not state.get("position_qty"):
-            return self._reconcile_with_holdings(self._empty_state())
-        return self._reconcile_with_holdings({**self._empty_state(), **state})
+            return self._reconcile_with_holdings(self._empty_state(), holdings=holdings)
+        return self._reconcile_with_holdings({**self._empty_state(), **state}, holdings=holdings)
 
-    def _reconcile_with_holdings(self, state):
+    def _reconcile_with_holdings(self, state, holdings=None):
         """로컬 state를 KIS 실제 보유 수량과 비교해 동기화한다.
 
         외부 매도/부분체결/수동 거래 등으로 발생한 desync를 막는다.
+        holdings(list)가 주입되면 그것을 사용해 추가 API 호출을 생략한다
+        (_build_monitors의 1회 prefetch 결과 공유). 미주입 시 직접 fetch.
         잔고 조회 실패 시(네트워크 오류 등) 로컬 state를 그대로 사용한다.
         """
         try:
+            if holdings is None:
+                holdings = get_holdings()
             held = next(
-                (h for h in get_holdings() if h["stock_code"] == self.stock_code),
+                (h for h in holdings if h["stock_code"] == self.stock_code),
                 None,
             )
         except Exception as e:

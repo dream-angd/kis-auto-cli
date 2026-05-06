@@ -155,11 +155,11 @@ def main():
     sub = parser.add_subparsers(dest="command")
 
     p_run = sub.add_parser("run", help="start swing strategy")
-    p_run.add_argument("--interval", type=int, default=300, help="swing interval seconds")
+    p_run.add_argument("--interval", type=int, default=None, help="swing interval seconds (default: SWING_INTERVAL_SEC env / 300)")
     p_run.set_defaults(func=cmd_run)
 
     p_run_all = sub.add_parser("run-all", help="start swing + scalp strategies in one process")
-    p_run_all.add_argument("--swing-interval", type=int, default=300, help="swing interval seconds")
+    p_run_all.add_argument("--swing-interval", type=int, default=None, help="swing interval seconds (default: SWING_INTERVAL_SEC env / 300)")
     p_run_all.add_argument("--scalp-code", default=None, help="stock code for scalp strategy")
     p_run_all.add_argument("--scalp-interval", type=float, default=None, help="scalp interval seconds")
     p_run_all.set_defaults(func=cmd_run_all)

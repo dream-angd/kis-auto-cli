@@ -288,7 +288,15 @@ logs/
 
 ## ✅ 개선 할 일 목록
 
-최종 갱신: 2026-05-06 (v0.7.0). 우선순위 순.
+최종 갱신: 2026-05-06 (v0.7.1). 우선순위 순.
+
+> **2026-05-06 반영 완료 (v0.7.1)**:
+> - 부팅 시 scalp 종목별 `get_holdings()` 중복 호출 제거 — N개 종목이라도 1회만 조회 (`combined._build_monitors` prefetch + `ScalpMonitor.__init__(holdings=...)`)
+> - 부팅 진행 로그 추가 ("[부팅] N종목 초기화 중...") — 사용자에게 침묵 구간 가시화
+> - `kis-trader.bat`에서 interval 입력 프롬프트 제거 (`SWING_INTERVAL_SEC` env 신규, `SCALP_INTERVAL_SEC`는 기존)
+> - heartbeat 컴팩트 모드 (idle): 보유 0이면 가격 1줄 + 잔고 1줄 = 2줄로 압축 (보유 발생 시 풀 포맷 자동 전환). 종목명으로 표시 (fallback: 코드)
+> - 시작 헤더 — `[Swing]` 블럭 끝에 빈 줄로 `[Scalp]` 블럭과 시각 분리
+> - 풀 모드 heartbeat (보유 ≥ 1) 헤더 앞에도 빈 줄 prepend
 
 > **2026-05-06 반영 완료 (v0.7.0)**:
 > - `auth.get_access_token` thread lock + double-check (다중 스레드 토큰 중복 발급 방지)
