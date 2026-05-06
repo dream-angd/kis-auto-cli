@@ -373,11 +373,18 @@ def _format_balance(
         f"  KIS 마감 잔고 스냅샷 — {snapshot_ts}",
         sep,
         f"  총 평가금액   : {balance.get('total_eval', 0):>12,} 원",
-        f"  예수금        : {balance.get('cash', 0):>12,} 원",
+        f"  가용 현금     : {balance.get('cash', 0):>12,} 원",
     ]
+    cash_deposit = balance.get("cash_deposit", balance.get("cash", 0))
+    if cash_deposit != balance.get("cash", 0):
+        lines.append(f"  예수금 총액   : {cash_deposit:>12,} 원  (D+2 정산 미반영)")
     pl = balance.get("profit_loss", 0)
     pl_sign = "+" if pl >= 0 else ""
     lines.append(f"  평가 손익     : {pl_sign}{pl:>11,} 원")
+    asset_change = balance.get("asset_change", 0)
+    if asset_change:
+        ac_sign = "+" if asset_change >= 0 else ""
+        lines.append(f"  오늘 자산변화 : {ac_sign}{asset_change:>11,} 원")
     lines.append("")
 
     lines.append("[ 보유 종목 ]")

@@ -232,6 +232,16 @@ def get_max_consecutive_losses() -> int:
     return int(os.getenv("MAX_CONSECUTIVE_LOSSES", "3"))
 
 
+def get_max_total_exposure() -> int:
+    """계좌 전체 노출 한도(원). 보유 평가액 + 신규 주문금액의 상한.
+
+    swing/scalp 양쪽이 각자 매수 직전 검증한다.
+    0 또는 음수면 비활성 (무한대 노출 허용).
+    예: 5천만 모의 계좌의 30%만 사용하려면 15,000,000.
+    """
+    return int(os.getenv("MAX_TOTAL_EXPOSURE", "0"))
+
+
 def get_heartbeat_interval_sec() -> int:
     """[scalp 상태] heartbeat 주기. 최소 5초."""
     return max(5, int(os.getenv("HEARTBEAT_INTERVAL_SEC", "30")))
@@ -303,8 +313,11 @@ def get_sell_fee_rate() -> float:
 
 
 def get_sell_tax_rate() -> float:
-    """매도 거래세율. 기본 0.18% (KOSPI/KOSDAQ 공통)."""
-    return float(os.getenv("SELL_TAX_RATE", "0.0018"))
+    """매도 거래세율. 기본 0.20% (2026년 기준 KOSPI/KOSDAQ 공통).
+
+    참고: 한국 증권거래세는 시기별로 변동 — 정확한 값은 KRX 공지 또는 PwC tax summary 확인.
+    """
+    return float(os.getenv("SELL_TAX_RATE", "0.0020"))
 
 
 # --- 체결 조회 ---

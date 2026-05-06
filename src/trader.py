@@ -149,7 +149,22 @@ def buy(stock_code, amount, current_price=0):
             "estimated": False,
         }
 
-    # 체결 정보를 못 받은 경우 — mock 환경 등에서 주문 시점 가격으로 fallback.
+    # 체결 정보를 못 받은 경우의 처리:
+    #   real 모드: 체결을 임의로 가정하면 local state ↔ 실제 잔고 불일치(중복매도/잘못된 PnL)
+    #              위험. 미체결 상태(filled_qty=0)로 명시적 반환하여 호출 측이 인지하게 한다.
+    #   mock 모드: KIS 모의 서버가 체결조회 API를 자주 거부하므로 운영 편의로
+    #              주문 시점 가격으로 fallback (estimated=True).
+    if get_mode() == "real":
+        return {
+            "ord_qty": qty,
+            "filled_qty": 0,
+            "avg_fill_price": 0,
+            "amount": 0,
+            "odno": odno,
+            "fully_filled": False,
+            "estimated": False,
+            "unknown_fill": True,  # 호출 측이 reconcile 트리거 가능
+        }
     return {
         "ord_qty": qty,
         "filled_qty": qty,
@@ -180,6 +195,19 @@ def sell(stock_code, quantity, current_price=0):
             "odno": odno,
             "fully_filled": filled_qty >= quantity,
             "estimated": False,
+        }
+
+    # real 모드: 미체결 상태 명시. mock 모드: 주문 시점 가격 fallback.
+    if get_mode() == "real":
+        return {
+            "ord_qty": quantity,
+            "filled_qty": 0,
+            "avg_fill_price": 0,
+            "amount": 0,
+            "odno": odno,
+            "fully_filled": False,
+            "estimated": False,
+            "unknown_fill": True,
         }
 
     if current_price <= 0:
@@ -237,11 +265,19 @@ def get_account_info():
 
     output2 = data.get("output2", [{}])
     summary = output2[0] if output2 else {}
+    # KIS 잔고 필드 매핑 (한국 D+2 정산 고려):
+    #   prvs_rcdl_excc_amt = 가수도 정산금액 = 실제 사용 가능 현금 ⭐
+    #   dnca_tot_amt       = 예수금 총액 (정산 미반영, 매수해도 그대로 남는 misleading 값)
+    #   tot_evlu_amt       = 총평가금액 (cash + 보유주식 평가)
+    #   asst_icdc_amt      = 오늘 자산 증감액 (KIS가 직접 계산한 일일 손익)
+    #   evlu_pfls_smtl_amt = 미실현 평가손익 (보유 종목)
     balance = {
         "total_eval": int(summary.get("tot_evlu_amt", 0)),
-        "cash": int(summary.get("dnca_tot_amt", 0)),
-        "profit_loss": int(summary.get("evlu_pfls_smtl_amt", 0)),
+        "cash": int(summary.get("prvs_rcdl_excc_amt", summary.get("dnca_tot_amt", 0))),
+        "cash_deposit": int(summary.get("dnca_tot_amt", 0)),  # 정산 전 예수금 (참고용)
+        "profit_loss": int(summary.get("evlu_pfls_smtl_amt", 0)),  # 미실현
         "profit_rate": float(summary.get("evlu_pfls_rt", 0)),
+        "asset_change": int(summary.get("asst_icdc_amt", 0)),  # 오늘 자산 증감 (D 단위 손익)
     }
 
     holdings = []

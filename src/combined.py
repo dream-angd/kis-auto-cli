@@ -6,7 +6,7 @@ import time
 import unicodedata
 from datetime import datetime
 
-from src import config
+from src import config, risk
 from src.logger import log_error, log_info
 from src.scalper import ScalpMonitor
 from src.scheduler import is_market_open, load_state, run_swing_cycle
@@ -280,12 +280,44 @@ def _format_heartbeat(monitors, balance=None, swing_holdings=None) -> str:
     # 잔고 + swing 보유 추가
     if balance:
         lines.append("")
+        # 미실현 PnL (보유 종목 평가손익) — 보유 0이면 항상 0
+        unrealized = balance.get("profit_loss", 0)
+        total_eval = balance.get("total_eval", 0)
+        principal = total_eval - unrealized
+        unr_pct = (unrealized / principal * 100) if principal > 0 else 0.0
+        cash = balance.get("cash", 0)
+        cash_deposit = balance.get("cash_deposit", cash)
+        # 가용 cash와 예수금이 다르면 둘 다 표시 (D+2 정산 미반영 차이)
+        if cash != cash_deposit:
+            cash_str = f"가용 {cash:,}원 (예수금 {cash_deposit:,}원)"
+        else:
+            cash_str = f"Cash {cash:,}원"
         lines.append(
-            f"  Cash {balance.get('cash', 0):,}원  "
-            f"Eval {balance.get('total_eval', 0):,}원  "
-            f"PnL {balance.get('profit_loss', 0):+,}원 "
-            f"({balance.get('profit_rate', 0):+.2f}%)"
+            f"  {cash_str}  Eval {total_eval:,}원  "
+            f"미실현 {unrealized:+,}원 ({unr_pct:+.4f}%)"
         )
+
+        # 오늘 손익: KIS 자산증감(asst_icdc_amt)과 우리 risk.daily_loss 둘 다 표시
+        try:
+            rs = risk.load_state()
+            realized = rs.get("daily_loss", 0.0)
+            wins = rs.get("wins", 0)
+            losses = rs.get("losses", 0)
+            trade_count = rs.get("trade_count", 0)
+            max_loss = config.get_max_daily_loss()
+            used_pct = (abs(realized) / max_loss * 100) if max_loss > 0 and realized < 0 else 0.0
+            limit_tag = "  ⚠ 한도 초과" if risk.is_daily_loss_limit_hit() else ""
+            asset_change = balance.get("asset_change", 0)
+            lines.append(
+                f"  오늘 자산변화 {asset_change:+,}원 (KIS)  "
+                f"실현 {realized:+,.0f}원 (자체)"
+            )
+            lines.append(
+                f"  Daily Loss 사용 {used_pct:.0f}%  "
+                f"W/L {wins}/{losses} (총 {trade_count}건){limit_tag}"
+            )
+        except Exception:
+            pass  # risk state 로드 실패 시 그 줄 생략
     if swing_holdings:
         for h in swing_holdings:
             name = config.format_stock(h["stock_code"])
