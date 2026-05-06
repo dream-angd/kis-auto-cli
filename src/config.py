@@ -252,6 +252,16 @@ def get_max_scalp_stocks() -> int:
     return max(1, int(os.getenv("MAX_SCALP_STOCKS", "10")))
 
 
+def get_reconcile_interval_sec() -> int:
+    """주기적 reconcile 주기. 기본 300초.
+
+    HTS 직접 매매·KIS 측 desync 등을 unknown_fill 발생 전에 발견하기 위해
+    combined run_loop에서 N초마다 모든 scalp monitor의 state를
+    get_holdings 결과로 재동기화한다. 0 이하면 비활성.
+    """
+    return max(0, int(os.getenv("RECONCILE_INTERVAL_SEC", "300")))
+
+
 def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
     """tmp 파일에 쓴 후 원본으로 rename — SIGTERM 등 중단 시 파일 손상 방지.
 

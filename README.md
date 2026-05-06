@@ -288,7 +288,12 @@ logs/
 
 ## ✅ 개선 할 일 목록
 
-최종 갱신: 2026-05-04 (v0.1.0). 우선순위 순.
+최종 갱신: 2026-05-06 (v0.7.0). 우선순위 순.
+
+> **2026-05-06 반영 완료 (v0.7.0)**:
+> - `auth.get_access_token` thread lock + double-check (다중 스레드 토큰 중복 발급 방지)
+> - SIGTERM / Windows SIGBREAK graceful shutdown 처리 (`src/signals.py` 헬퍼)
+> - 주기적 reconcile (`RECONCILE_INTERVAL_SEC`, 기본 300초) — HTS 직접 매매·KIS desync 조기 발견
 
 > **2026-05-04 반영 완료**:
 > - `daily_loss` 부호 처리 버그, 시장가 체결가 미사용, 부분체결/미체결 처리, 수수료·거래세 반영 손익
@@ -311,7 +316,6 @@ logs/
 - **[전략] swing MA5/MA20 단순 골든크로스 노이즈 취약** — 일봉 횡보장에서 휩쏘 빈번. EMA 도입 또는 추세 필터(예: 200일선 위) 추가 검토 (`src/analyzer.py:_check_*`)
 - **[전략] swing MACD 조건 약함** — `macd > macd_signal`만 봄. 둘 다 음수여도 통과되어 진짜 추세 없을 때 BUY 발생. `macd > 0 AND macd > signal AND 히스토그램 증가` 등 조건 강화 (`src/analyzer.py:analyze`)
 - **[전략] scalp 호가 외 추가 알파 부재** — 호가 잔량 검증은 도입됐으나 거래량 가속·체결강도(매수체결/매도체결 비율) 등은 미사용. 단순 가격 모멘텀의 한계 보완 필요
-- **[안정성] 시그널 핸들러 `SIGINT`만 처리** — Windows console close, 작업 스케줄러 강제 종료 시 graceful shutdown 보장 안 됨. `SIGTERM`, Windows `SIGBREAK` 처리 추가 (`src/scheduler.py:run_loop`, `src/combined.py:run_*_loop`)
 - **[버그] 잔고 페이지네이션 미구현** — `output1`만 읽고 `CTX_AREA_NK100` 무시. 보유 종목 100개 초과 시 일부 누락 (`src/trader.py:_inquire_balance_raw`)
 
 ### 🟡 Medium — 개선 권장
