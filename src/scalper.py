@@ -177,6 +177,20 @@ class ScalpMonitor:
             f"breakout momentum {momentum_pct:.2f}% + bid/ask={ratio:.2f}"
         )
 
+    @staticmethod
+    def _break_even_pct() -> float:
+        """비용 포함 break-even % (소수점 수치, 예: 0.43 == 0.43%).
+
+        매수 수수료 + 매도 수수료 + 거래세 + 슬리피지 버퍼.
+        매도 판단(추적/타임아웃)에서 "실수익 0" 기준선으로 사용.
+        """
+        return (
+            config.get_buy_fee_rate()
+            + config.get_sell_fee_rate()
+            + config.get_sell_tax_rate()
+            + config.get_scalp_slippage_buffer_pct()
+        ) * 100
+
     def _sell_signal(self, price):
         entry_price = int(self.state.get("entry_price", 0))
         if entry_price <= 0:
@@ -188,23 +202,22 @@ class ScalpMonitor:
             self._save_state()
 
         pnl_pct = ((price - entry_price) / entry_price) * 100
+        high_pct = ((high_price - entry_price) / entry_price) * 100
         drop_pct = ((high_price - price) / high_price) * 100 if high_price > 0 else 0
         age_sec = time.time() - float(self.state.get("entry_time", 0))
+        break_even = self._break_even_pct()  # 비용 포함 본전선 (≈0.43%)
 
+        # 손절·익절은 명목 기준 그대로 (사용자 직관 유지: "1% 익절 / -0.5% 손절")
         if pnl_pct <= config.get_scalp_stop_loss_pct():
             return True, f"stop loss {pnl_pct:.2f}%"
         if pnl_pct >= config.get_scalp_take_profit_pct():
             return True, f"take profit {pnl_pct:.2f}%"
-        if pnl_pct > 0 and drop_pct >= config.get_scalp_trailing_drop_pct():
-            return True, f"trailing drop {drop_pct:.2f}%"
-        # 타임아웃은 '실수익 기준'으로 판정. 수수료+거래세 차감 후 0 이하면 청산.
-        # (명목 0%만 잘라내던 기존 방식은 +0.1% 같은 미세 양전에서 갇히는 문제가 있었음)
-        total_cost_pct = (
-            config.get_buy_fee_rate()
-            + config.get_sell_fee_rate()
-            + config.get_sell_tax_rate()
-        ) * 100
-        if age_sec >= config.get_scalp_max_hold_sec() and pnl_pct <= total_cost_pct:
+        # 추적손절: 비용 포함 본전 위에서만 활성화. 양전이라도 break_even 미달이면
+        # 추적 발동해봤자 실손익 음수 청산이라 의미 없음.
+        if high_pct > break_even and drop_pct >= config.get_scalp_trailing_drop_pct():
+            return True, f"trailing drop {drop_pct:.2f}% (high {high_pct:+.2f}%)"
+        # 타임아웃: 보유 시간 초과 + 명목 손익이 break_even 이하 = 실수익 0 이하 → 청산
+        if age_sec >= config.get_scalp_max_hold_sec() and pnl_pct <= break_even:
             return True, f"timeout {int(age_sec)}s pnl {pnl_pct:.2f}% (실수익 0 이하)"
         return False, f"holding pnl {pnl_pct:.2f}%"
 
