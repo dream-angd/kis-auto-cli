@@ -50,8 +50,14 @@ def cmd_status(args):
     balance, holdings = get_account_info()
     print("\n=== Account ===")
     print(f"  Total eval: {balance['total_eval']:>15,} KRW")
-    print(f"  Cash:       {balance['cash']:>15,} KRW")
-    print(f"  P/L:        {balance['profit_loss']:>15,} KRW")
+    print(f"  Cash (가용): {balance['cash']:>14,} KRW")
+    cash_deposit = balance.get("cash_deposit", balance["cash"])
+    if cash_deposit != balance["cash"]:
+        print(f"  Cash (예수금): {cash_deposit:>12,} KRW  (D+2 정산 미반영)")
+    print(f"  P/L (미실현):  {balance['profit_loss']:>12,} KRW")
+    asset_change = balance.get("asset_change", 0)
+    if asset_change:
+        print(f"  오늘 자산변화: {asset_change:>12,} KRW")
 
     if holdings:
         print("\n=== Holdings ===")

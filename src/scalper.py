@@ -3,7 +3,7 @@ import time
 from collections import deque
 from datetime import date, datetime
 
-from src import config
+from src import config, risk
 from src.fetcher import get_current_price, get_orderbook
 from src.logger import log_error, log_info, log_trade
 from src.trader import buy, get_holdings, sell
@@ -208,12 +208,35 @@ class ScalpMonitor:
             return True, f"timeout {int(age_sec)}s pnl {pnl_pct:.2f}% (실수익 0 이하)"
         return False, f"holding pnl {pnl_pct:.2f}%"
 
+    @staticmethod
+    def _compute_current_exposure() -> int:
+        """KIS 잔고 기준 현재 보유 종목 총 평가액 (원). swing+scalp 합산."""
+        held = get_holdings()
+        return sum(int(h.get("current_price", 0)) * int(h.get("quantity", 0)) for h in held)
+
     def _enter_position(self, price, reason):
         amount = config.get_scalp_max_buy_amount()
         requested_qty = amount // price
         if requested_qty <= 0:
             log_info(f"SCALP {self.display} buy skipped: amount {amount:,} < price {price:,}")
             return
+
+        # MAX_TOTAL_EXPOSURE 검증 (계좌 전체 보유 평가액 + 신규 주문)
+        max_total = config.get_max_total_exposure()
+        if max_total > 0:
+            try:
+                current_exposure = self._compute_current_exposure()
+            except Exception:
+                current_exposure = 0  # 잔고 조회 실패 시 cap 검증 skip
+            if current_exposure + amount > max_total:
+                if not getattr(self, "_exposure_cap_announced", False):
+                    log_info(
+                        f"SCALP {self.display} buy skipped: 노출 한도 초과 "
+                        f"(현재 {current_exposure:,} + 신규 {amount:,} > {max_total:,})"
+                    )
+                    self._exposure_cap_announced = True
+                return
+            self._exposure_cap_announced = False  # 재진입 가능 상태로 돌아오면 다시 알림 가능
 
         if config.is_scalp_trade_enabled():
             order = buy(self.stock_code, amount, price)
@@ -254,7 +277,22 @@ class ScalpMonitor:
         entry_price = int(self.state.get("entry_price", 0))
 
         if config.is_scalp_trade_enabled():
-            order = sell(self.stock_code, held_qty, current_price=price)
+            try:
+                order = sell(self.stock_code, held_qty, current_price=price)
+            except RuntimeError as e:
+                # KIS 응답: "모의투자 잔고내역이 없습니다" 등 — local state와 실제 잔고 불일치.
+                # 실제 잔고로 강제 동기화하여 무한 매도 시도 루프 차단.
+                msg = str(e)
+                if "잔고" in msg or "내역이 없" in msg:
+                    log_info(
+                        f"SCALP {self.display} 매도 실패 ({msg}) — "
+                        f"local state ↔ KIS 잔고 동기화"
+                    )
+                    self.state = self._reconcile_with_holdings(self._empty_state())
+                    self._save_state()
+                else:
+                    log_error(f"SCALP {self.display} sell failed: {e}")
+                return
             filled_qty = int(order.get("filled_qty", 0))
             fill_price = int(order.get("avg_fill_price", 0))
             if filled_qty <= 0 or fill_price <= 0:
@@ -281,6 +319,10 @@ class ScalpMonitor:
             sell_tax = fill_price * filled_qty * config.get_sell_tax_rate()
             pnl = gross - buy_fee - sell_fee - sell_tax
 
+        # swing/scalp 공통 risk 회계에 누적. MAX_DAILY_LOSS 한도 초과 시 다음 사이클부터
+        # _enter_position이 차단된다 (run_once에서 risk.is_daily_loss_limit_hit() 체크).
+        risk.record_realized_pnl("scalp", pnl)
+
         log_trade(
             self.stock_code,
             action,
@@ -293,8 +335,15 @@ class ScalpMonitor:
 
         remaining = held_qty - filled_qty
         if remaining > 0:
+            # 부분 체결 — KIS 응답이 부정확할 수 있으니 실제 잔고 재확인
+            # (예: "체결 41/42"인데 실제로는 다 매도된 케이스 발생 사례 있음)
             self.state["position_qty"] = remaining
             self._save_state()
+            try:
+                self.state = self._reconcile_with_holdings(self.state)
+                self._save_state()
+            except Exception:
+                pass  # reconcile 실패 시 그대로 진행 (다음 사이클이 처리)
         else:
             self.state = self._empty_state()
             self._save_state()
@@ -364,6 +413,18 @@ class ScalpMonitor:
                             f"신규 매수 차단 (마감 {no_new_buy_min}분 전부터)"
                         )
                         self._no_new_buy_announced = True
+                    return
+                # 일일 손실 한도 초과 시 신규 매수 차단 (서킷 브레이커 — swing+scalp 공통)
+                if risk.is_daily_loss_limit_hit():
+                    if not getattr(self, "_daily_loss_limit_announced", False):
+                        state = risk.load_state()
+                        log_info(
+                            f"SCALP {self.display} 일일 손실 한도 초과 "
+                            f"(daily_loss={state['daily_loss']:+,.0f}원 / "
+                            f"한도 -{config.get_max_daily_loss():,.0f}원) "
+                            f"— 신규 매수 차단"
+                        )
+                        self._daily_loss_limit_announced = True
                     return
                 should_buy, reason = self._buy_signal(price)
                 if should_buy:
