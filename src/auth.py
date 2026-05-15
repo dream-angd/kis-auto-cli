@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 import time
 import requests
 
@@ -9,6 +10,11 @@ from src import config
 get_mode = config.get_mode
 get_base_url = config.get_base_url
 _get_app_keys = config.get_app_keys
+
+# 다중 스레드(scalp N개 + swing 메인)에서 캐시 만료 시점에
+# _request_token이 중복 호출되어 KIS rate limit / 토큰 무효화가
+# 발생하는 것을 막는 lock. get_access_token에서 double-check 패턴으로 사용.
+_token_lock = threading.Lock()
 
 
 def _ensure_cache_dir(path):
@@ -78,9 +84,14 @@ def get_access_token():
     token = _load_token_cache()
     if token:
         return token
-    token = _request_token()
-    _save_token_cache(token)
-    return token
+    with _token_lock:
+        # double-check: lock 대기 중 다른 스레드가 이미 발급/저장했을 수 있다
+        token = _load_token_cache()
+        if token:
+            return token
+        token = _request_token()
+        _save_token_cache(token)
+        return token
 
 
 def get_headers(tr_id=""):

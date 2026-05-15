@@ -5,6 +5,8 @@ from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
+from src.config import format_stock
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 LOGS_DIR = BASE_DIR / "logs"
 LOGS_DIR.mkdir(exist_ok=True)
@@ -63,7 +65,7 @@ def log_trade(
     reason: str = "",
     pnl: float | None = None,
 ) -> None:
-    log_info(f"{stock_code} | 신호: {action} | 가격: {price:,} | 수량: {quantity} | 금액: {amount:,} | {reason}")
+    log_info(f"{format_stock(stock_code)} | 신호: {action} | 가격: {price:,} | 수량: {quantity} | 금액: {amount:,} | {reason}")
 
     today = datetime.now().strftime("%Y%m%d")
     csv_path = LOGS_DIR / f"trades_{today}.csv"
@@ -88,7 +90,7 @@ def log_trade(
 
 def log_signal(stock_code: str, signal: str, price: int, reason: str = "") -> None:
     action_str = {"BUY": "BUY ", "SELL": "SELL", "HOLD": "HOLD"}
-    log_info(f"{stock_code} | 신호: {action_str.get(signal, signal)} | 가격: {price:,} | 결과: {reason}")
+    log_info(f"{format_stock(stock_code)} | 신호: {action_str.get(signal, signal)} | 가격: {price:,} | 결과: {reason}")
 
     today = datetime.now().strftime("%Y%m%d")
     sidecar_path = LOGS_DIR / f"raw_signals_{today}.log"

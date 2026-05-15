@@ -288,33 +288,68 @@ logs/
 
 ## ✅ 개선 할 일 목록
 
-최신 코드 분석: 2026-05-04 (직전 점검(2026-04-17) 항목은 모두 코드에 반영 완료).
-우선순위 순.
+최종 갱신: 2026-05-06 (v0.7.1). 우선순위 순.
+
+> **2026-05-06 반영 완료 (v0.7.1)**:
+> - 부팅 시 scalp 종목별 `get_holdings()` 중복 호출 제거 — N개 종목이라도 1회만 조회 (`combined._build_monitors` prefetch + `ScalpMonitor.__init__(holdings=...)`)
+> - 부팅 진행 로그 추가 ("[부팅] N종목 초기화 중...") — 사용자에게 침묵 구간 가시화
+> - `kis-trader.bat`에서 interval 입력 프롬프트 제거 (`SWING_INTERVAL_SEC` env 신규, `SCALP_INTERVAL_SEC`는 기존)
+> - heartbeat 컴팩트 모드 (idle): 보유 0이면 가격 1줄 + 잔고 1줄 = 2줄로 압축 (보유 발생 시 풀 포맷 자동 전환). 종목명으로 표시 (fallback: 코드)
+> - 시작 헤더 — `[Swing]` 블럭 끝에 빈 줄로 `[Scalp]` 블럭과 시각 분리
+> - 풀 모드 heartbeat (보유 ≥ 1) 헤더 앞에도 빈 줄 prepend
+
+> **2026-05-06 반영 완료 (v0.7.0)**:
+> - `auth.get_access_token` thread lock + double-check (다중 스레드 토큰 중복 발급 방지)
+> - SIGTERM / Windows SIGBREAK graceful shutdown 처리 (`src/signals.py` 헬퍼)
+> - 주기적 reconcile (`RECONCILE_INTERVAL_SEC`, 기본 300초) — HTS 직접 매매·KIS desync 조기 발견
+
+> **2026-05-04 반영 완료**:
+> - `daily_loss` 부호 처리 버그, 시장가 체결가 미사용, 부분체결/미체결 처리, 수수료·거래세 반영 손익
+> - state 파일 atomic write (`config.atomic_write_text`)
+> - swing 종목별 분리 (SWING_STOCKS/MAX/PCT 신규), scalp 다종목 + KRX 자동 매핑(FinanceDataReader, 24h 캐시)
+> - scalp 종목별 독립 thread (한 종목 지연이 다른 종목에 영향 없음)
+> - scalp 호가 잔량 검증 (`SCALP_BID_ASK_RATIO_MIN`, 가짜 풀돌이 필터)
+> - scalp 타임아웃 실수익 기준, 추적손절 0.3 → 0.5
+> - heartbeat B 형식 + 잔고/swing 보유 자동 표시
+> - swing 종목별 try/except 격리 (한 종목 분석 실패가 다른 종목 매매를 막지 않음)
+> - 5xx/429 retry 3회 → 5회 (fetcher, trader 모두), 지수 백오프
 
 ### 🔴 Critical — 즉시 수정 필요
 
-- **[검증] 백테스트 모듈 부재** — 전략(MA cross + RSI + BB)이 검증된 적 없는 파라미터. `MODE=real` 전환 전 1년치 일봉 기반 백테스트 필수
+- **[검증] 백테스트 모듈 부재** — 전략(MA cross + RSI + BB + 모멘텀 + 호가)이 검증된 적 없는 파라미터. `MODE=real` 전환 전 1년치 일봉/분봉 기반 백테스트 필수. 그리드 서치로 모멘텀·익절·손절·호가 임계 조합 검증
 
 ### 🟠 High — 기능 안정성
 
-- **[안정성] 상태 파일 atomic write 아님** — `path.write_text` 도중 중단 시 `state.json` / `scalp_state.json` 손상 가능. tmp 작성 후 `os.replace` 패턴 권장 (`src/scheduler.py:33`, `src/scalper.py:52`)
-- **[전략] 일봉 데이터로 5분 간격 분석** — swing이 5분마다 돌지만 `get_daily_ohlcv`는 일봉. 같은 일봉으로 동일 신호 반복. 의도와 빈도 불일치 (`src/scheduler.py` × `src/analyzer.py:112`)
-- **[전략] scalp 모멘텀 휩쏘 위험** — 단순 "최근 3틱 상승 + 0.2%"로 매수. 호가/거래량/체결강도 미고려. 상승 끝물 진입 + 하락 초입 매도 패턴으로 수수료·세금 누적 손실 위험 (`src/scalper.py:57-73`)
-- **[안정성] 시그널 핸들러 `SIGINT`만 처리** — Windows console close, 작업 스케줄러 강제 종료 시 graceful shutdown 보장 안 됨. `SIGTERM`, Windows `SIGBREAK` 처리 추가 (`src/scheduler.py:260`, `src/combined.py:34`)
-- **[버그] 잔고 페이지네이션 미구현** — `output1`만 읽고 `CTX_AREA_NK100` 무시. 보유 종목 100개 초과 시 일부 누락 (`src/trader.py:91-119`)
+- **[전략] swing 5분 사이클 vs 일봉 데이터 불일치** — swing이 5분마다 돌지만 `get_daily_ohlcv`는 일봉. 같은 일봉으로 동일 신호 반복. 분봉(15분/60분) 도입 또는 사이클 주기 1시간+로 조정 권장 (`src/scheduler.py` × `src/analyzer.py`)
+- **[전략] swing MA5/MA20 단순 골든크로스 노이즈 취약** — 일봉 횡보장에서 휩쏘 빈번. EMA 도입 또는 추세 필터(예: 200일선 위) 추가 검토 (`src/analyzer.py:_check_*`)
+- **[전략] swing MACD 조건 약함** — `macd > macd_signal`만 봄. 둘 다 음수여도 통과되어 진짜 추세 없을 때 BUY 발생. `macd > 0 AND macd > signal AND 히스토그램 증가` 등 조건 강화 (`src/analyzer.py:analyze`)
+- **[전략] scalp 호가 외 추가 알파 부재** — 호가 잔량 검증은 도입됐으나 거래량 가속·체결강도(매수체결/매도체결 비율) 등은 미사용. 단순 가격 모멘텀의 한계 보완 필요
+- **[버그] 잔고 페이지네이션 미구현** — `output1`만 읽고 `CTX_AREA_NK100` 무시. 보유 종목 100개 초과 시 일부 누락 (`src/trader.py:_inquire_balance_raw`)
 
 ### 🟡 Medium — 개선 권장
 
-- **[정합성] ATR 사이징 vs `%` 손절 기준 불일치** — 포지션 크기는 `ATR×2` 손절 거리로 잡지만 청산은 `STOP_LOSS_PCT=-3%` 고정. 사이징 정신과 어긋남. 청산도 ATR 기반으로 통일 권장 (`src/analyzer.py:67-99`)
-- **[운영] 에러 후 silent continue + 알림 부재** — `log_error` 후 다음 사이클 진행. 같은 에러 반복 시 조용히 누락. 임계값 알림(텔레그램/이메일/슬랙) 부재 (`src/scheduler.py:236`)
-- **[로깅] 일별 CSV/raw 파일 정리 정책 없음** — `app.log`/`error.log`는 `TimedRotatingFileHandler`로 30일 회전되지만, `trades_YYYYMMDD.csv` / `raw_errors_*.log` / `raw_signals_*.log`는 무한 누적. 압축/삭제 정책 필요 (`src/logger.py`)
-- **[운영] `KR_HOLIDAYS` import 시 1회 평가** — 임시휴장(반장 등) 미반영. KIS 영업일 API 활용 권장 (`src/scheduler.py:14`)
+- **[정합성] ATR 사이징 vs `%` 손절 기준 불일치** — 포지션 크기는 `ATR×2` 손절 거리로 잡지만 청산은 `SWING_STOP_LOSS_PCT=-3%` 고정. 사이징 정신과 어긋남. 청산도 ATR 기반으로 통일 권장 (`src/analyzer.py:calc_position_size` × `_check_stop_loss_take_profit`)
+- **[운영] 에러 후 silent continue + 알림 채널 부재** — `log_error` 후 다음 사이클 진행. 같은 에러 반복 시 조용히 누락. 텔레그램/Slack/이메일 임계값 알림 도입 권장 (`src/scheduler.py`, `src/scalper.py`)
+- **[로깅] 일별 CSV/raw 파일 정리 정책 없음** — `app.log`/`error.log`는 `TimedRotatingFileHandler`로 30일 회전되지만, `trades_YYYYMMDD.csv` / `raw_errors_*.log` / `raw_signals_*.log` / `start_snapshot_*.json` 등은 무한 누적. 30일 이전 자동 삭제 cron 또는 startup 정리 필요 (`src/logger.py`, `src/reporter.py`)
+- **[운영] `KR_HOLIDAYS` import 시 1회 평가** — 임시휴장(반장 등) 미반영. KIS 영업일 API 활용 또는 매일 자정 갱신 권장 (`src/scheduler.py:14`)
 
 ### 🔵 Low — 장기 개선
 
 - **[보안] `.env` 평문 저장** — Windows 자격증명 관리자 / OS keyring 활용 권장
-- **[테스트] 통합 테스트 커버리지 부족** — fetcher / trader / auth / scalper / combined의 mock API 응답 테스트 추가 필요 (`tests/`)
+- **[테스트] 통합 테스트 커버리지 부족** — fetcher / trader / auth / scalper / combined의 mock API 응답 테스트 추가 필요. 현재 87 테스트는 analyzer / config / reporter / scheduler 위주 (`tests/`)
 - **[일관성] 다국어 혼용** — 로그·주석·메시지 한/영 섞임. 한 언어로 통일 (외부 공유 시 일관성)
+
+---
+
+## 🚧 큰 작업 (별도 PR 가치)
+
+| 항목 | 작업량 | 우선순위 | 비고 |
+|------|--------|---------|------|
+| **백테스트 모듈** | 1~2일 | ⭐ 최우선 | 모든 파라미터의 데이터 기반 검증. FinanceDataReader 일봉 + KIS 분봉. 그리드 서치 + 결과 리포트 |
+| **분봉 데이터 도입** (swing) | 0.5~1일 | High | 5분/15분/60분 분봉으로 swing 사이클 의미 살림. 위 백테스트와 함께 진행하면 효율적 |
+| **거래량 가속 / 체결강도** (scalp) | 0.5일 | Medium | scalp 알파 보강. 매 사이클 누적 거래량 vs 평균 비교, 매수체결/매도체결 비율 |
+| **알림 채널 도입** | 0.5일 | Medium | 텔레그램 봇 또는 Slack webhook. 매수/매도/에러/서킷 발동 시 푸시 |
+| **백테스트 + 분봉 + 거래량** 묶음 | 2~3일 | — | 셋 다 같이 가는 게 효율적. 분봉 데이터로 백테스트하면서 거래량 알파도 검증 |
 
 ---
 

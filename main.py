@@ -50,8 +50,14 @@ def cmd_status(args):
     balance, holdings = get_account_info()
     print("\n=== Account ===")
     print(f"  Total eval: {balance['total_eval']:>15,} KRW")
-    print(f"  Cash:       {balance['cash']:>15,} KRW")
-    print(f"  P/L:        {balance['profit_loss']:>15,} KRW")
+    print(f"  Cash (가용): {balance['cash']:>14,} KRW")
+    cash_deposit = balance.get("cash_deposit", balance["cash"])
+    if cash_deposit != balance["cash"]:
+        print(f"  Cash (예수금): {cash_deposit:>12,} KRW  (D+2 정산 미반영)")
+    print(f"  P/L (미실현):  {balance['profit_loss']:>12,} KRW")
+    asset_change = balance.get("asset_change", 0)
+    if asset_change:
+        print(f"  오늘 자산변화: {asset_change:>12,} KRW")
 
     if holdings:
         print("\n=== Holdings ===")
@@ -76,7 +82,8 @@ def cmd_history(args):
         print(f"\n  {date_str} 매매 이력 없음\n")
         return
 
-    with open(csv_path, "r", encoding="utf-8") as f:
+    # 파일이 손상돼도 가능한 부분만이라도 표시 (errors='replace')
+    with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
         rows = list(csv.DictReader(f))
 
     if not rows:
@@ -97,6 +104,23 @@ def cmd_history(args):
         except (ValueError, KeyError):
             continue
     print()
+
+
+def cmd_backtest(args):
+    from src.backtester import run_backtest
+    from src.backtest_reporter import generate_report
+
+    print(f"\n  백테스트 시작: {args.stock} ({args.start} ~ {args.end})")
+    result = run_backtest(
+        stock_code=args.stock,
+        start=args.start,
+        end=args.end,
+        csv_path=args.csv,
+        initial_capital=args.capital,
+    )
+    csv_path, json_path = generate_report(result)
+    print(f"  저장: {csv_path}")
+    print(f"  저장: {json_path}\n")
 
 
 def cmd_report(args):
@@ -148,11 +172,11 @@ def main():
     sub = parser.add_subparsers(dest="command")
 
     p_run = sub.add_parser("run", help="start swing strategy")
-    p_run.add_argument("--interval", type=int, default=300, help="swing interval seconds")
+    p_run.add_argument("--interval", type=int, default=None, help="swing interval seconds (default: SWING_INTERVAL_SEC env / 300)")
     p_run.set_defaults(func=cmd_run)
 
     p_run_all = sub.add_parser("run-all", help="start swing + scalp strategies in one process")
-    p_run_all.add_argument("--swing-interval", type=int, default=300, help="swing interval seconds")
+    p_run_all.add_argument("--swing-interval", type=int, default=None, help="swing interval seconds (default: SWING_INTERVAL_SEC env / 300)")
     p_run_all.add_argument("--scalp-code", default=None, help="stock code for scalp strategy")
     p_run_all.add_argument("--scalp-interval", type=float, default=None, help="scalp interval seconds")
     p_run_all.set_defaults(func=cmd_run_all)
@@ -173,6 +197,14 @@ def main():
     p_analyze.add_argument("code", help="stock code, e.g. 005930")
     p_analyze.set_defaults(func=cmd_analyze)
 
+    p_backtest = sub.add_parser("backtest", help="백테스트 실행")
+    p_backtest.add_argument("stock", help="종목 코드 (예: 005930)")
+    p_backtest.add_argument("--start", required=True, metavar="YYYY-MM-DD", help="시작일")
+    p_backtest.add_argument("--end", required=True, metavar="YYYY-MM-DD", help="종료일")
+    p_backtest.add_argument("--csv", default=None, metavar="FILE", help="로컬 CSV 파일 경로 (미지정 시 KIS API)")
+    p_backtest.add_argument("--capital", type=float, default=10_000_000, help="초기 자본금 (기본: 10,000,000)")
+    p_backtest.set_defaults(func=cmd_backtest)
+
     p_report = sub.add_parser("report", help="일별 리포트 (재)생성")
     p_report.add_argument("--date", default=None, metavar="YYYYMMDD", help="대상 날짜 (기본: 오늘)")
     p_report.set_defaults(func=cmd_report)
@@ -182,7 +214,20 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    args.func(args)
+    try:
+        args.func(args)
+    except UnicodeDecodeError as e:
+        # 예: trades_*.csv 등 로그 파일이 손상되어 utf-8 디코드 실패
+        print(f"\n[파일 인코딩 오류] {e}\n", file=sys.stderr)
+        print("  logs/ 디렉토리의 파일이 손상되었을 수 있습니다.", file=sys.stderr)
+        print("  해당 파일을 백업 후 삭제하면 다음 시작 시 자동 재생성됩니다.\n", file=sys.stderr)
+        sys.exit(2)
+    except ValueError as e:
+        # 예: SCALP_STOCKS / SWING_STOCKS에 잘못된 종목명/코드 입력
+        print(f"\n[설정 오류] {e}\n", file=sys.stderr)
+        print("  .env의 SWING_STOCKS / SCALP_STOCKS 값을 확인하세요.", file=sys.stderr)
+        print("  종목명 또는 6자리 종목코드 사용 가능 (예: 'SK하이닉스' 또는 '000660').\n", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

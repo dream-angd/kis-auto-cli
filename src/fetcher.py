@@ -18,18 +18,26 @@ def _rate_limit():
         _last_call_time = time.time()
 
 
+_RETRY_STATUS = {429, 500, 502, 503, 504}
+_RETRY_BACKOFFS = (0.3, 0.5, 0.8, 1.2, 2.0)  # 5회 재시도, 누적 4.8초
+
+
 def _api_get(path, params, tr_id):
     _rate_limit()
     url = f"{get_base_url()}{path}"
     headers = get_headers(tr_id)
-    for attempt in range(3):
+    last_status = None
+    attempts = len(_RETRY_BACKOFFS)
+    for attempt in range(attempts):
         resp = requests.get(url, headers=headers, params=params, timeout=10)
-        if resp.status_code == 429:
-            time.sleep(1 * (attempt + 1))
+        if resp.status_code in _RETRY_STATUS:
+            last_status = resp.status_code
+            if attempt < attempts - 1:
+                time.sleep(_RETRY_BACKOFFS[attempt])
             continue
         resp.raise_for_status()
         return resp.json()
-    raise RuntimeError("API 호출 실패: 429 Too Many Requests 반복")
+    raise RuntimeError(f"API 호출 실패 (HTTP {last_status} 반복)")
 
 
 def get_current_price(stock_code):
@@ -50,6 +58,34 @@ def get_current_price(stock_code):
         "high": int(output.get("stck_hgpr", 0)),
         "low": int(output.get("stck_lwpr", 0)),
         "open": int(output.get("stck_oprc", 0)),
+    }
+
+
+def get_orderbook(stock_code):
+    """호가 잔량 조회. 매수/매도 총잔량과 비율 반환.
+
+    bid_ask_ratio = 총매수잔량 / 총매도잔량.
+      > 1.0  → 매수세 우위 (매수자 더 많음)
+      < 1.0  → 매도세 우위
+    호가가 비어있는 경우(거래정지 등) ratio=0.
+    """
+    params = {
+        "FID_COND_MRKT_DIV_CODE": "J",
+        "FID_INPUT_ISCD": stock_code,
+    }
+    data = _api_get(
+        "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+        params,
+        "FHKST01010200",
+    )
+    output1 = data.get("output1") or {}
+    total_bid = int(output1.get("total_bidp_rsqn", 0))
+    total_ask = int(output1.get("total_askp_rsqn", 0))
+    ratio = (total_bid / total_ask) if total_ask > 0 else 0.0
+    return {
+        "total_bid_qty": total_bid,
+        "total_ask_qty": total_ask,
+        "bid_ask_ratio": ratio,
     }
 
 

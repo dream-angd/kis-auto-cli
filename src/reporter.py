@@ -56,8 +56,10 @@ def _calc_pnl_stats(trades: list[dict]) -> dict:
       win_rate         : float — win_count / total_sell_count * 100; sell=0이면 0.0
       pnl_available    : bool  — pnl 컬럼이 하나라도 있으면 True (구버전 CSV 감지)
     """
-    buy_rows = [t for t in trades if t.get("action", "").strip() == "BUY"]
-    sell_rows = [t for t in trades if t.get("action", "").strip() == "SELL"]
+    _BUY_ACTIONS = {"BUY", "BUY_PARTIAL", "SCALP_BUY", "SCALP_BUY_PARTIAL"}
+    _SELL_ACTIONS = {"SELL", "SELL_PARTIAL", "SCALP_SELL", "SCALP_SELL_PARTIAL"}
+    buy_rows = [t for t in trades if t.get("action", "").strip() in _BUY_ACTIONS]
+    sell_rows = [t for t in trades if t.get("action", "").strip() in _SELL_ACTIONS]
 
     total_buy_count = len(buy_rows)
     total_sell_count = len(sell_rows)
@@ -373,11 +375,18 @@ def _format_balance(
         f"  KIS 마감 잔고 스냅샷 — {snapshot_ts}",
         sep,
         f"  총 평가금액   : {balance.get('total_eval', 0):>12,} 원",
-        f"  예수금        : {balance.get('cash', 0):>12,} 원",
+        f"  가용 현금     : {balance.get('cash', 0):>12,} 원",
     ]
+    cash_deposit = balance.get("cash_deposit", balance.get("cash", 0))
+    if cash_deposit != balance.get("cash", 0):
+        lines.append(f"  예수금 총액   : {cash_deposit:>12,} 원  (D+2 정산 미반영)")
     pl = balance.get("profit_loss", 0)
     pl_sign = "+" if pl >= 0 else ""
     lines.append(f"  평가 손익     : {pl_sign}{pl:>11,} 원")
+    asset_change = balance.get("asset_change", 0)
+    if asset_change:
+        ac_sign = "+" if asset_change >= 0 else ""
+        lines.append(f"  오늘 자산변화 : {ac_sign}{asset_change:>11,} 원")
     lines.append("")
 
     lines.append("[ 보유 종목 ]")
@@ -420,7 +429,7 @@ def generate_daily_report(
 
     예외 발생 시 호출자에게 전파한다 (호출자가 log_error로 처리).
     """
-    from src.config import get_target_stocks, get_mode
+    from src.config import get_swing_stocks, get_scalp_stocks, get_mode
 
     logs_dir = get_logs_dir()
     generated: list[Path] = []
@@ -445,7 +454,12 @@ def generate_daily_report(
         # ISO 포맷(2026-05-02T09:08:55)을 공백 구분으로 변환
         started_at = raw_ts.replace("T", " ")
 
-    target_stocks = get_target_stocks()
+    # swing + scalp 종목 합집합 (감시 대상 전체)
+    seen = []
+    for code in [*get_swing_stocks(), *get_scalp_stocks()]:
+        if code and code not in seen:
+            seen.append(code)
+    target_stocks = seen
     mode = get_mode()
 
     # --- summary ---

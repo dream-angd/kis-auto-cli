@@ -5,7 +5,7 @@ import requests
 
 from src import config
 from src.auth import get_base_url, get_headers, get_mode
-from src.fetcher import _rate_limit
+from src.fetcher import _rate_limit, _RETRY_BACKOFFS
 
 
 def _get_account():
@@ -26,10 +26,12 @@ def _order_request(tr_id, stock_code, qty, price=0, order_type="01"):
         "ORD_QTY": str(qty),
         "ORD_UNPR": str(price) if order_type == "00" else "0",
     }
-    for attempt in range(3):
+    attempts = len(_RETRY_BACKOFFS)
+    for attempt in range(attempts):
         resp = requests.post(url, headers=headers, json=body, timeout=10)
-        if resp.status_code == 429:
-            time.sleep(1 * (attempt + 1))
+        if resp.status_code in (429, 500, 502, 503, 504):
+            if attempt < attempts - 1:
+                time.sleep(_RETRY_BACKOFFS[attempt])
             continue
         resp.raise_for_status()
         data = resp.json()
@@ -68,10 +70,12 @@ def get_order_execution(odno: str, stock_code: str) -> dict:
     }
     url = f"{get_base_url()}/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
     headers = get_headers(tr_id)
-    for attempt in range(3):
+    attempts = len(_RETRY_BACKOFFS)
+    for attempt in range(attempts):
         resp = requests.get(url, headers=headers, params=params, timeout=10)
-        if resp.status_code == 429:
-            time.sleep(1 * (attempt + 1))
+        if resp.status_code in (429, 500, 502, 503, 504):
+            if attempt < attempts - 1:
+                time.sleep(_RETRY_BACKOFFS[attempt])
             continue
         resp.raise_for_status()
         data = resp.json()
@@ -145,7 +149,22 @@ def buy(stock_code, amount, current_price=0):
             "estimated": False,
         }
 
-    # 체결 정보를 못 받은 경우 — mock 환경 등에서 주문 시점 가격으로 fallback.
+    # 체결 정보를 못 받은 경우의 처리:
+    #   real 모드: 체결을 임의로 가정하면 local state ↔ 실제 잔고 불일치(중복매도/잘못된 PnL)
+    #              위험. 미체결 상태(filled_qty=0)로 명시적 반환하여 호출 측이 인지하게 한다.
+    #   mock 모드: KIS 모의 서버가 체결조회 API를 자주 거부하므로 운영 편의로
+    #              주문 시점 가격으로 fallback (estimated=True).
+    if get_mode() == "real":
+        return {
+            "ord_qty": qty,
+            "filled_qty": 0,
+            "avg_fill_price": 0,
+            "amount": 0,
+            "odno": odno,
+            "fully_filled": False,
+            "estimated": False,
+            "unknown_fill": True,  # 호출 측이 reconcile 트리거 가능
+        }
     return {
         "ord_qty": qty,
         "filled_qty": qty,
@@ -178,6 +197,19 @@ def sell(stock_code, quantity, current_price=0):
             "estimated": False,
         }
 
+    # real 모드: 미체결 상태 명시. mock 모드: 주문 시점 가격 fallback.
+    if get_mode() == "real":
+        return {
+            "ord_qty": quantity,
+            "filled_qty": 0,
+            "avg_fill_price": 0,
+            "amount": 0,
+            "odno": odno,
+            "fully_filled": False,
+            "estimated": False,
+            "unknown_fill": True,
+        }
+
     if current_price <= 0:
         try:
             from src.fetcher import get_current_price
@@ -195,8 +227,8 @@ def sell(stock_code, quantity, current_price=0):
     }
 
 
-def _inquire_balance_raw():
-    """잔고 조회 API 1회 호출 → 원본 응답 반환 (balance + holdings 공용)"""
+def _inquire_balance_page(ctx_fk100: str = "", ctx_nk100: str = "") -> dict:
+    """잔고 조회 API 1페이지 호출."""
     _rate_limit()
     cano, acnt = _get_account()
     tr_id = "TTTC8434R" if get_mode() == "real" else "VTTC8434R"
@@ -210,15 +242,17 @@ def _inquire_balance_raw():
         "FUND_STTL_ICLD_YN": "N",
         "FNCG_AMT_AUTO_RDPT_YN": "N",
         "PRCS_DVSN": "01",
-        "CTX_AREA_FK100": "",
-        "CTX_AREA_NK100": "",
+        "CTX_AREA_FK100": ctx_fk100,
+        "CTX_AREA_NK100": ctx_nk100,
     }
     url = f"{get_base_url()}/uapi/domestic-stock/v1/trading/inquire-balance"
     headers = get_headers(tr_id)
-    for attempt in range(3):
+    attempts = len(_RETRY_BACKOFFS)
+    for attempt in range(attempts):
         resp = requests.get(url, headers=headers, params=params, timeout=10)
-        if resp.status_code == 429:
-            time.sleep(1 * (attempt + 1))
+        if resp.status_code in (429, 500, 502, 503, 504):
+            if attempt < attempts - 1:
+                time.sleep(_RETRY_BACKOFFS[attempt])
             continue
         resp.raise_for_status()
         return resp.json()
@@ -226,20 +260,43 @@ def _inquire_balance_raw():
 
 
 def get_account_info():
-    """잔고 + 보유종목을 한 번의 API 호출로 조회."""
-    data = _inquire_balance_raw()
+    """잔고 + 보유종목을 페이지네이션으로 전체 조회."""
+    all_output1 = []
+    ctx_fk100 = ""
+    ctx_nk100 = ""
+    balance = {}
 
-    output2 = data.get("output2", [{}])
-    summary = output2[0] if output2 else {}
-    balance = {
-        "total_eval": int(summary.get("tot_evlu_amt", 0)),
-        "cash": int(summary.get("dnca_tot_amt", 0)),
-        "profit_loss": int(summary.get("evlu_pfls_smtl_amt", 0)),
-        "profit_rate": float(summary.get("evlu_pfls_rt", 0)),
-    }
+    while True:
+        data = _inquire_balance_page(ctx_fk100, ctx_nk100)
+        all_output1.extend(data.get("output1", []))
+
+        # 첫 페이지에서 summary(잔고 합계) 수집
+        if not balance:
+            output2 = data.get("output2", [{}])
+            summary = output2[0] if output2 else {}
+            # KIS 잔고 필드 매핑 (한국 D+2 정산 고려):
+            #   prvs_rcdl_excc_amt = 가수도 정산금액 = 실제 사용 가능 현금 ⭐
+            #   dnca_tot_amt       = 예수금 총액 (정산 미반영, 매수해도 그대로 남는 misleading 값)
+            #   tot_evlu_amt       = 총평가금액 (cash + 보유주식 평가)
+            #   asst_icdc_amt      = 오늘 자산 증감액 (KIS가 직접 계산한 일일 손익)
+            #   evlu_pfls_smtl_amt = 미실현 평가손익 (보유 종목)
+            balance = {
+                "total_eval": int(summary.get("tot_evlu_amt", 0)),
+                "cash": int(summary.get("prvs_rcdl_excc_amt", summary.get("dnca_tot_amt", 0))),
+                "cash_deposit": int(summary.get("dnca_tot_amt", 0)),  # 정산 전 예수금 (참고용)
+                "profit_loss": int(summary.get("evlu_pfls_smtl_amt", 0)),  # 미실현
+                "profit_rate": float(summary.get("evlu_pfls_rt", 0)),
+                "asset_change": int(summary.get("asst_icdc_amt", 0)),  # 오늘 자산 증감 (D 단위 손익)
+            }
+
+        # 다음 페이지 연속조회 키 확인
+        ctx_nk100 = (data.get("ctx_area_nk100") or "").strip()
+        ctx_fk100 = (data.get("ctx_area_fk100") or "").strip()
+        if not ctx_nk100:
+            break
 
     holdings = []
-    for item in data.get("output1", []):
+    for item in all_output1:
         qty = int(item.get("hldg_qty", 0))
         if qty <= 0:
             continue

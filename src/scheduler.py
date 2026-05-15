@@ -1,44 +1,42 @@
 import json
 import os
-import signal
 import time
 from datetime import date, datetime
 
 import holidays
 
-from src import config
+from src import config, risk
 from src.analyzer import analyze, calc_position_size
 from src.logger import log_error, log_info, log_signal, log_trade
+from src.signals import install_shutdown_handlers, restore_handlers
 from src.trader import buy, get_account_info, sell
 
 KR_HOLIDAYS = holidays.KR()
 
 
+# 하위 호환: 기존 _load_state / _save_state 호출부가 동작하도록 risk.py로 위임.
+# 새 코드는 src.risk를 직접 import해서 record_realized_pnl/is_daily_loss_limit_hit 사용 권장.
 def _load_state() -> dict:
-    today = date.today().isoformat()
-    path = config.get_state_path()
-    if path.exists():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if data.get("date") == today:
-                return data
-        except Exception:
-            pass
-    return {"date": today, "daily_loss": 0, "consecutive_losses": 0}
+    return risk.load_state()
+
+
+def _atomic_write(path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(path)
 
 
 def _save_state(state: dict) -> None:
-    path = config.get_state_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    risk.save_state(state)
 
 
 def load_state() -> dict:
-    return _load_state()
+    return risk.load_state()
 
 
 def save_state(state: dict) -> None:
-    _save_state(state)
+    risk.save_state(state)
 
 
 def is_market_open():
@@ -78,7 +76,12 @@ def _check_holdings(holdings, state, excluded_codes=None):
         if h["stock_code"] in excluded_codes:
             continue
 
-        result = analyze(h["stock_code"], avg_price=h["avg_price"])
+        try:
+            result = analyze(h["stock_code"], avg_price=h["avg_price"])
+        except Exception as e:
+            # 한 종목 분석 실패가 다른 종목 매매를 막지 않게 격리
+            log_error(f"Swing analyze failed [{config.format_stock(h['stock_code'])}]: {e}")
+            continue
         log_signal(h["stock_code"], result["signal"], result["current_price"], result["reason"])
 
         if result["signal"] != "SELL":
@@ -87,25 +90,23 @@ def _check_holdings(holdings, state, excluded_codes=None):
         try:
             order = sell(h["stock_code"], h["quantity"], current_price=result["current_price"])
         except Exception as e:
-            log_error(f"Swing sell failed [{h['stock_code']}]: {e}")
+            log_error(f"Swing sell failed [{config.format_stock(h['stock_code'])}]: {e}")
             continue
 
         filled_qty = int(order.get("filled_qty", 0))
         fill_price = int(order.get("avg_fill_price", 0))
         if filled_qty <= 0 or fill_price <= 0:
             log_error(
-                f"Swing sell unfilled [{h['stock_code']}]: ord={order.get('ord_qty')}, "
+                f"Swing sell unfilled [{config.format_stock(h['stock_code'])}]: ord={order.get('ord_qty')}, "
                 f"filled={filled_qty}, odno={order.get('odno')}"
             )
             continue
 
         pnl = _calc_realized_pnl(h["avg_price"], fill_price, filled_qty)
-        state["daily_loss"] += pnl
-        if pnl < 0:
-            state["consecutive_losses"] += 1
-        else:
-            state["consecutive_losses"] = 0
-        _save_state(state)
+        # risk.record_realized_pnl: daily_loss + wins/losses + consecutive_losses + trade_count 일괄 갱신
+        risk.record_realized_pnl("swing", pnl)
+        # 호출 측 state 인자 (run_swing_cycle에서 전달)도 최신 값으로 동기화
+        state.update(risk.load_state())
 
         action = "SELL" if order.get("fully_filled") else "SELL_PARTIAL"
         log_trade(
@@ -121,9 +122,12 @@ def _check_holdings(holdings, state, excluded_codes=None):
 
 def _check_targets(holdings, balance, state, excluded_codes=None):
     excluded_codes = excluded_codes or set()
-    target_stocks = config.get_target_stocks()
-    max_buy = config.get_max_buy_amount()
+    target_stocks = config.get_swing_stocks()
+    max_buy = config.get_swing_max_buy_amount()
     available_cash = balance["cash"]
+    max_total_exposure = config.get_max_total_exposure()
+    # 현재 노출 = 보유 종목 평가액 합 (swing+scalp 모두 포함)
+    current_exposure = sum(int(h.get("current_price", 0)) * int(h.get("quantity", 0)) for h in holdings)
 
     holdings_codes = {h["stock_code"] for h in holdings}
 
@@ -135,11 +139,18 @@ def _check_targets(holdings, balance, state, excluded_codes=None):
         if available_cash <= 0:
             break
 
-        result = analyze(code)
-        log_signal(code, result["signal"], result["current_price"], result["reason"])
+        try:
+            result = analyze(code)
+        except Exception as e:
+            # 한 종목 분석 실패가 다른 종목 매매를 막지 않게 격리
+            log_error(f"Swing analyze failed [{config.format_stock(code)}]: {e}")
+            continue
 
         if result["signal"] != "BUY":
+            # 매수 후보의 BUY 외 신호(SELL/HOLD)는 보유 0이라 의미 없음.
+            # 콘솔 노이즈 줄이기 위해 log_signal 호출 안 함 (raw_signals 파일에도 기록 안 됨).
             continue
+        log_signal(code, result["signal"], result["current_price"], result["reason"])
 
         atr = result.get("atr", 0.0)
         qty = calc_position_size(result["current_price"], atr, max_buy)
@@ -147,18 +158,24 @@ def _check_targets(holdings, balance, state, excluded_codes=None):
         if available_cash < amount:
             log_info(f"매수 가능 현금 부족: {available_cash:,}원 < {amount:,}원 (ATR={atr:.0f})")
             continue
+        if max_total_exposure > 0 and current_exposure + amount > max_total_exposure:
+            log_info(
+                f"Swing buy skipped [{config.format_stock(code)}]: 노출 한도 초과 "
+                f"(현재 {current_exposure:,} + 신규 {amount:,} > {max_total_exposure:,})"
+            )
+            continue
 
         try:
             order = buy(code, amount, result["current_price"])
         except Exception as e:
-            log_error(f"Swing buy failed [{code}]: {e}")
+            log_error(f"Swing buy failed [{config.format_stock(code)}]: {e}")
             continue
 
         filled_qty = int(order.get("filled_qty", 0))
         fill_price = int(order.get("avg_fill_price", 0))
         if filled_qty <= 0 or fill_price <= 0:
             log_error(
-                f"Swing buy unfilled [{code}]: ord={order.get('ord_qty')}, "
+                f"Swing buy unfilled [{config.format_stock(code)}]: ord={order.get('ord_qty')}, "
                 f"filled={filled_qty}, odno={order.get('odno')}"
             )
             continue
@@ -277,17 +294,41 @@ def _maybe_generate_report() -> None:
         log_error(f"일별 리포트 생성 실패: {e}")
 
 
+_swing_error_counts: dict[str, int] = {}
+_ALERT_THRESHOLD = 3
+
+
 def run_swing_cycle(state, excluded_codes=None):
     if _check_circuit_breaker(state):
         log_info("Swing strategy stopped by circuit breaker.")
         return False
 
+    # 잔고 조회 실패는 사이클 자체 포기 (이후 분석/매매 불가능)
     try:
         balance, holdings = get_account_info()
-        _check_holdings(holdings, state, excluded_codes=excluded_codes)
-        _check_targets(holdings, balance, state, excluded_codes=excluded_codes)
     except Exception as e:
-        log_error(f"Swing cycle failed: {e}")
+        log_error(f"Swing balance fetch failed (사이클 skip): {e}")
+        return True  # 다음 사이클(5분 후) 재시도
+
+    # 종목별 분석/매매는 _check_holdings, _check_targets 내부에서
+    # 종목 단위로 try/except 격리되어 있음. 한 종목 실패가 다른 종목 매매를 막지 않는다.
+    try:
+        _check_holdings(holdings, state, excluded_codes=excluded_codes)
+    except Exception as e:
+        log_error(f"Swing _check_holdings unexpected error: {e}")
+    try:
+        _check_targets(holdings, balance, state, excluded_codes=excluded_codes)
+        # 성공 시 오류 카운터 초기화
+        _swing_error_counts.clear()
+    except Exception as e:
+        err_key = type(e).__name__
+        _swing_error_counts[err_key] = _swing_error_counts.get(err_key, 0) + 1
+        count = _swing_error_counts[err_key]
+        log_error(f"Swing _check_targets unexpected error: {e}")
+        if count >= _ALERT_THRESHOLD:
+            log_error(
+                f"[ALERT] Swing cycle 동일 오류 {count}회 반복: {err_key} — 운영자 확인 필요"
+            )
     return True
 
 
@@ -303,7 +344,9 @@ def _log_closed_market_message():
     return False
 
 
-def run_loop(interval_sec=300):
+def run_loop(interval_sec=None):
+    if interval_sec is None:
+        interval_sec = config.get_swing_interval_sec()
     running = True
 
     def signal_handler(sig, frame):
@@ -311,14 +354,13 @@ def run_loop(interval_sec=300):
         log_info("Shutdown signal received. Graceful shutdown...")
         running = False
 
-    prev_handler = signal.signal(signal.SIGINT, signal_handler)
+    prev_handlers = install_shutdown_handlers(signal_handler)
     _write_status()
     state = _load_state()
 
-    log_info(f"=== Swing strategy started (MODE: {config.get_mode()}) ===")
-    log_info(f"Targets: {','.join(config.get_target_stocks())}")
-    log_info(f"Max buy amount: {config.get_max_buy_amount()}")
-    log_info(f"Interval: {interval_sec}s")
+    from src.combined import _format_swing_block
+    log_info(f"=== Swing 시작 (MODE: {config.get_mode().upper()}) ===")
+    log_info(_format_swing_block(config.get_swing_stocks(), interval_sec))
 
     try:
         while running:
@@ -340,6 +382,8 @@ def run_loop(interval_sec=300):
     finally:
         _clear_status()
         _maybe_generate_report()
-        signal.signal(signal.SIGINT, prev_handler)
+        restore_handlers(prev_handlers)
+        from src.combined import print_daily_summary
+        print_daily_summary()
 
     log_info("=== Swing strategy stopped ===")
