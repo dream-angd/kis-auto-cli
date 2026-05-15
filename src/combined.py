@@ -8,7 +8,15 @@ from datetime import datetime
 from src import config, risk
 from src.logger import log_error, log_info
 from src.scalper import ScalpMonitor
-from src.scheduler import is_market_open, load_state, run_swing_cycle
+from src.scheduler import (
+    _clear_status,
+    _maybe_generate_report,
+    _snapshot_holdings_at_open,
+    _write_status,
+    is_market_open,
+    load_state,
+    run_swing_cycle,
+)
 from src.signals import install_shutdown_handlers, restore_handlers
 from src.trader import get_holdings
 
@@ -486,11 +494,13 @@ def run_all_loop(swing_interval_sec=None, scalp_stock=None, scalp_interval_sec=N
     swing_codes = [c for c in config.get_swing_stocks() if c not in excluded_from_swing]
 
     log_info(f"=== 자동매매 시작 (MODE: {config.get_mode().upper()}) ===")
-    log_info(_format_swing_block(swing_codes, swing_interval_sec) + "\n")
+    log_info(_format_swing_block(swing_codes, swing_interval_sec) + "
+")
     log_info(_format_scalp_block(monitors, scalp_interval_sec))
 
     stop_event = threading.Event()
     scalp_threads = []
+    _write_status()
     next_swing_at = 0
     next_heartbeat_at = 0
     next_reconcile_at = 0
@@ -518,6 +528,8 @@ def run_all_loop(swing_interval_sec=None, scalp_stock=None, scalp_interval_sec=N
                 if reconcile_interval > 0:
                     next_reconcile_at = time.time() + reconcile_interval
 
+            _snapshot_holdings_at_open()
+
             now = time.time()
             if now >= next_swing_at:
                 if not run_swing_cycle(swing_state, excluded_codes=excluded_from_swing):
@@ -544,6 +556,8 @@ def run_all_loop(swing_interval_sec=None, scalp_stock=None, scalp_interval_sec=N
         if market_threads_active:
             _stop_scalp_threads(scalp_threads, stop_event)
         restore_handlers(prev_handlers)
+        _clear_status()
+        _maybe_generate_report()
         print_daily_summary()
 
     log_info("=== Combined strategy stopped ===")
@@ -572,6 +586,8 @@ def run_scalp_loop(scalp_stock=None, scalp_interval_sec=None):
     reconcile_interval = config.get_reconcile_interval_sec()
     market_threads_active = False
 
+    _write_status()
+
     try:
         while running:
             if not is_market_open():
@@ -592,6 +608,8 @@ def run_scalp_loop(scalp_stock=None, scalp_interval_sec=None):
                 next_heartbeat_at = time.time() + config.get_heartbeat_interval_sec()
                 if reconcile_interval > 0:
                     next_reconcile_at = time.time() + reconcile_interval
+
+            _snapshot_holdings_at_open()
 
             # 마감 강제 청산 + 모든 보유 0 → 조기 종료
             if _is_post_close_done(monitors):
@@ -614,6 +632,8 @@ def run_scalp_loop(scalp_stock=None, scalp_interval_sec=None):
         if market_threads_active:
             _stop_scalp_threads(scalp_threads, stop_event)
         restore_handlers(prev_handlers)
+        _clear_status()
+        _maybe_generate_report()
         print_daily_summary()
 
     log_info("=== Scalp strategy stopped ===")

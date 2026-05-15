@@ -106,6 +106,23 @@ def cmd_history(args):
     print()
 
 
+def cmd_backtest(args):
+    from src.backtester import run_backtest
+    from src.backtest_reporter import generate_report
+
+    print(f"\n  백테스트 시작: {args.stock} ({args.start} ~ {args.end})")
+    result = run_backtest(
+        stock_code=args.stock,
+        start=args.start,
+        end=args.end,
+        csv_path=args.csv,
+        initial_capital=args.capital,
+    )
+    csv_path, json_path = generate_report(result)
+    print(f"  저장: {csv_path}")
+    print(f"  저장: {json_path}\n")
+
+
 def cmd_report(args):
     from datetime import datetime
     from src.reporter import generate_daily_report
@@ -179,6 +196,14 @@ def main():
     p_analyze = sub.add_parser("analyze", help="analyze stock")
     p_analyze.add_argument("code", help="stock code, e.g. 005930")
     p_analyze.set_defaults(func=cmd_analyze)
+
+    p_backtest = sub.add_parser("backtest", help="백테스트 실행")
+    p_backtest.add_argument("stock", help="종목 코드 (예: 005930)")
+    p_backtest.add_argument("--start", required=True, metavar="YYYY-MM-DD", help="시작일")
+    p_backtest.add_argument("--end", required=True, metavar="YYYY-MM-DD", help="종료일")
+    p_backtest.add_argument("--csv", default=None, metavar="FILE", help="로컬 CSV 파일 경로 (미지정 시 KIS API)")
+    p_backtest.add_argument("--capital", type=float, default=10_000_000, help="초기 자본금 (기본: 10,000,000)")
+    p_backtest.set_defaults(func=cmd_backtest)
 
     p_report = sub.add_parser("report", help="일별 리포트 (재)생성")
     p_report.add_argument("--date", default=None, metavar="YYYYMMDD", help="대상 날짜 (기본: 오늘)")

@@ -146,15 +146,26 @@ class ScalpMonitor:
     def _has_position(self):
         return int(self.state.get("position_qty", 0)) > 0
 
-    def _buy_signal(self, price):
+    def _buy_signal(self, price, volume=0):
         if len(self.prices) < self.prices.maxlen:
             return False, "warming up"
+
+        # 최소 거래량 필터
+        min_vol = config.get_scalp_min_volume()
+        if min_vol > 0 and volume < min_vol:
+            return False, f"low volume {volume} < {min_vol}"
 
         series = list(self.prices)
         previous = series[:-1]
         base = min(previous)
         if base <= 0:
             return False, "invalid base price"
+
+        # 최소 틱 이동 필터
+        min_tick = config.get_scalp_min_tick_move()
+        tick_move = max(series) - min(series)
+        if min_tick > 0 and tick_move < min_tick:
+            return False, f"tick move {tick_move} < {min_tick}"
 
         momentum_pct = ((price - base) / base) * 100
         breakout = price >= max(previous)
@@ -388,7 +399,9 @@ class ScalpMonitor:
 
     def run_once(self):
         try:
-            price = get_current_price(self.stock_code)["price"]
+            price_info = get_current_price(self.stock_code)
+            price = price_info["price"]
+            volume = price_info.get("volume", 0)
         except Exception:
             # KIS 모의 500 에러 등은 흔하므로 침묵 (retry는 fetcher가 처리).
             # 5회 연속 실패시에만 한 번 알림.
@@ -448,7 +461,7 @@ class ScalpMonitor:
                         )
                         self._daily_loss_limit_announced = True
                     return
-                should_buy, reason = self._buy_signal(price)
+                should_buy, reason = self._buy_signal(price, volume=volume)
                 if should_buy:
                     log_info(f"SCALP {self.display} 매수 신호: {reason} @ {price:,}")
                     self._enter_position(price, reason)

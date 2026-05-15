@@ -20,6 +20,13 @@ def _load_state() -> dict:
     return risk.load_state()
 
 
+def _atomic_write(path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(path)
+
+
 def _save_state(state: dict) -> None:
     risk.save_state(state)
 
@@ -287,6 +294,10 @@ def _maybe_generate_report() -> None:
         log_error(f"일별 리포트 생성 실패: {e}")
 
 
+_swing_error_counts: dict[str, int] = {}
+_ALERT_THRESHOLD = 3
+
+
 def run_swing_cycle(state, excluded_codes=None):
     if _check_circuit_breaker(state):
         log_info("Swing strategy stopped by circuit breaker.")
@@ -307,8 +318,17 @@ def run_swing_cycle(state, excluded_codes=None):
         log_error(f"Swing _check_holdings unexpected error: {e}")
     try:
         _check_targets(holdings, balance, state, excluded_codes=excluded_codes)
+        # 성공 시 오류 카운터 초기화
+        _swing_error_counts.clear()
     except Exception as e:
+        err_key = type(e).__name__
+        _swing_error_counts[err_key] = _swing_error_counts.get(err_key, 0) + 1
+        count = _swing_error_counts[err_key]
         log_error(f"Swing _check_targets unexpected error: {e}")
+        if count >= _ALERT_THRESHOLD:
+            log_error(
+                f"[ALERT] Swing cycle 동일 오류 {count}회 반복: {err_key} — 운영자 확인 필요"
+            )
     return True
 
 
