@@ -190,3 +190,13 @@ def is_scalp_trade_enabled() -> bool:
 
 def get_scalp_state_path() -> Path:
     return get_data_dir() / "scalp_state.json"
+
+
+def get_scalp_min_volume() -> int:
+    """매수 신호 발생 시 최소 거래량 조건 (0이면 비활성). 기본값 1000."""
+    return int(os.getenv("SCALP_MIN_VOLUME", "1000"))
+
+
+def get_scalp_min_tick_move() -> int:
+    """최근 틱 창에서 요구하는 최소 가격 변동 (원). 0이면 비활성. 기본값 0."""
+    return int(os.getenv("SCALP_MIN_TICK_MOVE", "0"))

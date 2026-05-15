@@ -56,8 +56,10 @@ def _calc_pnl_stats(trades: list[dict]) -> dict:
       win_rate         : float — win_count / total_sell_count * 100; sell=0이면 0.0
       pnl_available    : bool  — pnl 컬럼이 하나라도 있으면 True (구버전 CSV 감지)
     """
-    buy_rows = [t for t in trades if t.get("action", "").strip() == "BUY"]
-    sell_rows = [t for t in trades if t.get("action", "").strip() == "SELL"]
+    _BUY_ACTIONS = {"BUY", "BUY_PARTIAL", "SCALP_BUY", "SCALP_BUY_PARTIAL"}
+    _SELL_ACTIONS = {"SELL", "SELL_PARTIAL", "SCALP_SELL", "SCALP_SELL_PARTIAL"}
+    buy_rows = [t for t in trades if t.get("action", "").strip() in _BUY_ACTIONS]
+    sell_rows = [t for t in trades if t.get("action", "").strip() in _SELL_ACTIONS]
 
     total_buy_count = len(buy_rows)
     total_sell_count = len(sell_rows)

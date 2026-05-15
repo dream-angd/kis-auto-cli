@@ -1,6 +1,11 @@
+from datetime import date
+
 import pandas as pd
 from src import config
 from src.fetcher import get_daily_ohlcv, get_current_price
+
+# 일봉 OHLCV 캐시: {stock_code: (cache_date, DataFrame)}
+_ohlcv_cache: dict[str, tuple[date, pd.DataFrame]] = {}
 
 
 def _calc_ma(series, window):
@@ -100,6 +105,17 @@ def _check_stop_loss_take_profit(current_price, avg_price):
     return "HOLD", ""
 
 
+def _get_daily_ohlcv_cached(stock_code: str) -> pd.DataFrame:
+    """일봉 데이터를 당일 캐싱하여 반환한다. 날짜가 바뀌면 재조회한다."""
+    today = date.today()
+    cached = _ohlcv_cache.get(stock_code)
+    if cached and cached[0] == today:
+        return cached[1]
+    df = get_daily_ohlcv(stock_code, days=60)
+    _ohlcv_cache[stock_code] = (today, df)
+    return df
+
+
 def analyze(stock_code, avg_price=0):
     price_info = get_current_price(stock_code)
     current_price = price_info["price"]
@@ -109,7 +125,7 @@ def analyze(stock_code, avg_price=0):
         if signal == "SELL":
             return {"signal": "SELL", "reason": reason, "current_price": current_price, "atr": 0.0}
 
-    df = get_daily_ohlcv(stock_code, days=60)
+    df = _get_daily_ohlcv_cached(stock_code)
     if df.empty or len(df) < 26:
         return {"signal": "HOLD", "reason": "데이터 부족", "current_price": current_price, "atr": 0.0}
 

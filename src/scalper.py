@@ -49,20 +49,33 @@ class ScalpMonitor:
     def _save_state(self):
         path = config.get_scalp_state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(self.state, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
 
     def _has_position(self):
         return int(self.state.get("position_qty", 0)) > 0
 
-    def _buy_signal(self, price):
+    def _buy_signal(self, price, volume=0):
         if len(self.prices) < self.prices.maxlen:
             return False, "warming up"
+
+        # 최소 거래량 필터
+        min_vol = config.get_scalp_min_volume()
+        if min_vol > 0 and volume < min_vol:
+            return False, f"low volume {volume} < {min_vol}"
 
         series = list(self.prices)
         previous = series[:-1]
         base = min(previous)
         if base <= 0:
             return False, "invalid base price"
+
+        # 최소 틱 이동 필터
+        min_tick = config.get_scalp_min_tick_move()
+        tick_move = max(series) - min(series)
+        if min_tick > 0 and tick_move < min_tick:
+            return False, f"tick move {tick_move} < {min_tick}"
 
         momentum_pct = ((price - base) / base) * 100
         breakout = price >= max(previous)
@@ -198,7 +211,9 @@ class ScalpMonitor:
 
     def run_once(self):
         try:
-            price = get_current_price(self.stock_code)["price"]
+            price_info = get_current_price(self.stock_code)
+            price = price_info["price"]
+            volume = price_info.get("volume", 0)
         except Exception as e:
             log_error(f"SCALP {self.stock_code} price fetch failed: {e}")
             return
@@ -216,7 +231,7 @@ class ScalpMonitor:
                 if should_sell:
                     self._exit_position(price, reason)
             else:
-                should_buy, reason = self._buy_signal(price)
+                should_buy, reason = self._buy_signal(price, volume=volume)
                 log_info(f"SCALP {self.stock_code} price={price:,} position=off {reason}")
                 if should_buy:
                     self._enter_position(price, reason)

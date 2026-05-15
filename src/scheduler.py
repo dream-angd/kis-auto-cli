@@ -27,10 +27,16 @@ def _load_state() -> dict:
     return {"date": today, "daily_loss": 0, "consecutive_losses": 0}
 
 
+def _atomic_write(path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(path)
+
+
 def _save_state(state: dict) -> None:
     path = config.get_state_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write(path, json.dumps(state, ensure_ascii=False, indent=2))
 
 
 def load_state() -> dict:
@@ -277,6 +283,10 @@ def _maybe_generate_report() -> None:
         log_error(f"일별 리포트 생성 실패: {e}")
 
 
+_swing_error_counts: dict[str, int] = {}
+_ALERT_THRESHOLD = 3
+
+
 def run_swing_cycle(state, excluded_codes=None):
     if _check_circuit_breaker(state):
         log_info("Swing strategy stopped by circuit breaker.")
@@ -286,8 +296,17 @@ def run_swing_cycle(state, excluded_codes=None):
         balance, holdings = get_account_info()
         _check_holdings(holdings, state, excluded_codes=excluded_codes)
         _check_targets(holdings, balance, state, excluded_codes=excluded_codes)
+        # 성공 시 오류 카운터 초기화
+        _swing_error_counts.clear()
     except Exception as e:
+        err_key = type(e).__name__
+        _swing_error_counts[err_key] = _swing_error_counts.get(err_key, 0) + 1
+        count = _swing_error_counts[err_key]
         log_error(f"Swing cycle failed: {e}")
+        if count >= _ALERT_THRESHOLD:
+            log_error(
+                f"[ALERT] Swing cycle 동일 오류 {count}회 반복: {err_key} — 운영자 확인 필요"
+            )
     return True
 
 
@@ -312,6 +331,11 @@ def run_loop(interval_sec=300):
         running = False
 
     prev_handler = signal.signal(signal.SIGINT, signal_handler)
+    # Windows: 콘솔 창 닫기 또는 작업 스케줄러 종료 시 발생하는 신호 처리
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, signal_handler)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, signal_handler)
     _write_status()
     state = _load_state()
 

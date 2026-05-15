@@ -195,8 +195,8 @@ def sell(stock_code, quantity, current_price=0):
     }
 
 
-def _inquire_balance_raw():
-    """잔고 조회 API 1회 호출 → 원본 응답 반환 (balance + holdings 공용)"""
+def _inquire_balance_page(ctx_fk100: str = "", ctx_nk100: str = "") -> dict:
+    """잔고 조회 API 1페이지 호출."""
     _rate_limit()
     cano, acnt = _get_account()
     tr_id = "TTTC8434R" if get_mode() == "real" else "VTTC8434R"
@@ -210,8 +210,8 @@ def _inquire_balance_raw():
         "FUND_STTL_ICLD_YN": "N",
         "FNCG_AMT_AUTO_RDPT_YN": "N",
         "PRCS_DVSN": "01",
-        "CTX_AREA_FK100": "",
-        "CTX_AREA_NK100": "",
+        "CTX_AREA_FK100": ctx_fk100,
+        "CTX_AREA_NK100": ctx_nk100,
     }
     url = f"{get_base_url()}/uapi/domestic-stock/v1/trading/inquire-balance"
     headers = get_headers(tr_id)
@@ -226,20 +226,35 @@ def _inquire_balance_raw():
 
 
 def get_account_info():
-    """잔고 + 보유종목을 한 번의 API 호출로 조회."""
-    data = _inquire_balance_raw()
+    """잔고 + 보유종목을 페이지네이션으로 전체 조회."""
+    all_output1 = []
+    ctx_fk100 = ""
+    ctx_nk100 = ""
+    balance = {}
 
-    output2 = data.get("output2", [{}])
-    summary = output2[0] if output2 else {}
-    balance = {
-        "total_eval": int(summary.get("tot_evlu_amt", 0)),
-        "cash": int(summary.get("dnca_tot_amt", 0)),
-        "profit_loss": int(summary.get("evlu_pfls_smtl_amt", 0)),
-        "profit_rate": float(summary.get("evlu_pfls_rt", 0)),
-    }
+    while True:
+        data = _inquire_balance_page(ctx_fk100, ctx_nk100)
+        all_output1.extend(data.get("output1", []))
+
+        # 첫 페이지에서 summary(잔고 합계) 수집
+        if not balance:
+            output2 = data.get("output2", [{}])
+            summary = output2[0] if output2 else {}
+            balance = {
+                "total_eval": int(summary.get("tot_evlu_amt", 0)),
+                "cash": int(summary.get("dnca_tot_amt", 0)),
+                "profit_loss": int(summary.get("evlu_pfls_smtl_amt", 0)),
+                "profit_rate": float(summary.get("evlu_pfls_rt", 0)),
+            }
+
+        # 다음 페이지 연속조회 키 확인
+        ctx_nk100 = (data.get("ctx_area_nk100") or "").strip()
+        ctx_fk100 = (data.get("ctx_area_fk100") or "").strip()
+        if not ctx_nk100:
+            break
 
     holdings = []
-    for item in data.get("output1", []):
+    for item in all_output1:
         qty = int(item.get("hldg_qty", 0))
         if qty <= 0:
             continue

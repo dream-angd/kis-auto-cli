@@ -5,7 +5,15 @@ from datetime import datetime
 from src import config
 from src.logger import log_info
 from src.scalper import ScalpMonitor
-from src.scheduler import is_market_open, load_state, run_swing_cycle
+from src.scheduler import (
+    _clear_status,
+    _maybe_generate_report,
+    _snapshot_holdings_at_open,
+    _write_status,
+    is_market_open,
+    load_state,
+    run_swing_cycle,
+)
 
 
 def _market_closed_for_today():
@@ -32,6 +40,10 @@ def run_all_loop(swing_interval_sec=300, scalp_stock=None, scalp_interval_sec=No
         running = False
 
     prev_handler = signal.signal(signal.SIGINT, signal_handler)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, signal_handler)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, signal_handler)
 
     swing_state = load_state()
     scalp = ScalpMonitor(scalp_stock)
@@ -45,6 +57,7 @@ def run_all_loop(swing_interval_sec=300, scalp_stock=None, scalp_interval_sec=No
     log_info(f"Scalp trade enabled: {config.is_scalp_trade_enabled()}")
     log_info(f"Swing excludes scalp stock: {','.join(excluded_from_swing)}")
 
+    _write_status()
     next_swing_at = 0
     next_scalp_at = 0
 
@@ -57,6 +70,7 @@ def run_all_loop(swing_interval_sec=300, scalp_stock=None, scalp_interval_sec=No
                 time.sleep(60)
                 continue
 
+            _snapshot_holdings_at_open()
             now = time.time()
 
             if now >= next_swing_at:
@@ -70,6 +84,8 @@ def run_all_loop(swing_interval_sec=300, scalp_stock=None, scalp_interval_sec=No
 
             time.sleep(0.5)
     finally:
+        _clear_status()
+        _maybe_generate_report()
         signal.signal(signal.SIGINT, prev_handler)
 
     log_info("=== Combined strategy stopped ===")
@@ -84,6 +100,10 @@ def run_scalp_loop(scalp_stock=None, scalp_interval_sec=None):
         running = False
 
     prev_handler = signal.signal(signal.SIGINT, signal_handler)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, signal_handler)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, signal_handler)
 
     scalp = ScalpMonitor(scalp_stock)
     scalp_interval_sec = scalp_interval_sec or config.get_scalp_interval_sec()
@@ -92,6 +112,8 @@ def run_scalp_loop(scalp_stock=None, scalp_interval_sec=None):
     log_info(f"Scalp stock: {scalp.stock_code}")
     log_info(f"Scalp interval: {scalp_interval_sec}s")
     log_info(f"Scalp trade enabled: {config.is_scalp_trade_enabled()}")
+
+    _write_status()
 
     try:
         while running:
@@ -102,11 +124,14 @@ def run_scalp_loop(scalp_stock=None, scalp_interval_sec=None):
                 time.sleep(60)
                 continue
 
+            _snapshot_holdings_at_open()
             scalp.run_once()
             end_sleep = time.time() + scalp_interval_sec
             while running and time.time() < end_sleep:
                 time.sleep(0.5)
     finally:
+        _clear_status()
+        _maybe_generate_report()
         signal.signal(signal.SIGINT, prev_handler)
 
     log_info("=== Scalp strategy stopped ===")
